@@ -17,8 +17,10 @@ VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
 THUMB_SIZE    = 160
 THUMB_CACHE   = Path.home() / ".cache" / "caelestia-settings" / "thumbs"
 _MPV_PID_FILE = Path.home() / ".cache" / "caelestia-settings" / "mpvpaper.pid"
-_EXECS_CONF   = Path.home() / ".config" / "hypr" / "hyprland" / "execs.conf"
-_MPVPAPER_MARKER = "# caelestia-settings: video-wallpaper"
+_EXECS_LUA = Path.home() / ".config" / "hypr" / "hyprland" / "execs.lua"
+_EXECS_CONF = _EXECS_LUA
+_MPVPAPER_MARKER = "-- caelestia-settings: video-wallpaper"
+_LEGACY_MPVPAPER_MARKER = "# caelestia-settings: video-wallpaper"
 
 
 def _get_image_dir() -> Path:
@@ -43,15 +45,13 @@ def _ensure_dirs():
 
 
 def _write_mpvpaper_autostart(video_path: Path | None):
-    _EXECS_CONF.parent.mkdir(parents=True, exist_ok=True)
-    lines = _EXECS_CONF.read_text().splitlines() if _EXECS_CONF.exists() else []
-    lines = [line for line in lines if _MPVPAPER_MARKER not in line]
+    _EXECS_LUA.parent.mkdir(parents=True, exist_ok=True)
+    lines = _EXECS_LUA.read_text().splitlines() if _EXECS_LUA.exists() else []
+    lines = [line for line in lines if _MPVPAPER_MARKER not in line and _LEGACY_MPVPAPER_MARKER not in line]
     if video_path is not None:
-        lines.append(
-            f"exec-once = mpvpaper '*' {shlex.quote(str(video_path))}"
-            f" -o 'loop --no-audio --panscan=1.0'  {_MPVPAPER_MARKER}"
-        )
-    _EXECS_CONF.write_text("\n".join(lines) + "\n")
+        cmd = f"mpvpaper '*' {shlex.quote(str(video_path))} -o 'loop --no-audio --panscan=1.0'"
+        lines.append(f'hl.exec_cmd("{cmd}")  {_MPVPAPER_MARKER}')
+    _EXECS_LUA.write_text("\n".join(lines) + "\n")
 
 
 def get_current_wallpaper() -> str:

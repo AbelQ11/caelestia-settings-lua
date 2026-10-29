@@ -29,10 +29,10 @@ APP_TARGET_BIN="$BIN_DIR/caelestia-settings"
 APP_TARGET_DESKTOP="$APP_LAUNCHER_DIR/org.caelestia.settings.desktop"
 
 HYPR_CONFIG_DIR="$HOME/.config/hypr"
-HYPR_CONFIG_FILE="$HYPR_CONFIG_DIR/hyprland.conf"
-HYPR_INCLUDES_DIR="$HYPR_CONFIG_DIR/hyprland"
-RULES_CONFIG_FILE="$HYPR_INCLUDES_DIR/rules.conf"
-KEYBINDS_CONFIG_FILE="$HYPR_INCLUDES_DIR/keybinds.conf"
+HYPR_LUA_FILE="$HYPR_CONFIG_DIR/hyprland.lua"
+CAELESTIA_CONFIG_DIR="$HOME/.config/caelestia"
+HYPR_USER_LUA="$CAELESTIA_CONFIG_DIR/hypr-user.lua"
+KEYBINDS_LUA_FILE="$HYPR_CONFIG_DIR/keybinds.lua"
 
 # --- 2. Confirm ---
 # Optional first positional argument: PID of the running app (passed by the
@@ -56,8 +56,8 @@ if [ "$SKIP_CONFIRM" = false ]; then
     echo "  - $APP_DATA_DIR"
     echo "  - $APP_TARGET_BIN"
     echo "  - $APP_TARGET_DESKTOP"
-    echo "  - The Caelestia Settings window rules in $RULES_CONFIG_FILE"
-    echo "  - The Super+I keybind (if present in hyprland.conf/keybinds.conf)"
+    echo "  - The Caelestia Settings window rules in $HYPR_USER_LUA"
+    echo "  - The Super+I keybind (if present in hypr-user.lua/keybinds.lua)"
     echo
     read -r -p "Continue? [y/N] " REPLY
     case "$REPLY" in
@@ -107,14 +107,13 @@ echo
 
 # --- 6. Remove app-specific Hyprland window rules ---
 echo ">>> STEP 4: Removing Hyprland window rules..."
-RULES_TAG="# Caelestia Settings Rules"
-if [ -f "$RULES_CONFIG_FILE" ] && grep -q -F "$RULES_TAG" "$RULES_CONFIG_FILE"; then
+RULES_TAG="-- Caelestia Settings Rules"
+if [ -f "$HYPR_USER_LUA" ] && grep -q -F "org.caelestia.settings" "$HYPR_USER_LUA"; then
     sed -i \
         -e "/^${RULES_TAG//\//\\/}\$/d" \
-        -e '/^windowrule = float true, match:class org\\.caelestia\\.settings$/d' \
-        -e '/^windowrule = center 1, match:class org\\.caelestia\\.settings$/d' \
-        "$RULES_CONFIG_FILE"
-    echo "--- Removed window rules from $RULES_CONFIG_FILE"
+        -e '/org\.caelestia\.settings/d' \
+        "$HYPR_USER_LUA"
+    echo "--- Removed window rules from $HYPR_USER_LUA"
 else
     echo "--- Not found, skipping."
 fi
@@ -123,9 +122,9 @@ echo
 # --- 7. Remove the Super+I keybind ---
 echo ">>> STEP 5: Removing Super+I keybind..."
 BIND_REMOVED=false
-for f in "$HYPR_CONFIG_FILE" "$KEYBINDS_CONFIG_FILE"; do
-    if [ -f "$f" ] && grep -q -F "exec, caelestia-settings" "$f"; then
-        sed -i '/exec, caelestia-settings/d' "$f"
+for f in "$HYPR_USER_LUA" "$KEYBINDS_LUA_FILE" "$HYPR_LUA_FILE"; do
+    if [ -f "$f" ] && grep -q -F "caelestia-settings" "$f"; then
+        sed -i '/caelestia-settings/d' "$f"
         echo "--- Removed keybind from $f"
         BIND_REMOVED=true
     fi

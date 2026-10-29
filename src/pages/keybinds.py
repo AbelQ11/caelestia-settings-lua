@@ -6,10 +6,18 @@ from pathlib import Path
 from src.lang import t
 from gi.repository import Gtk, Adw
 
-import caelestia_core
+try:
+    import caelestia_core
+except ImportError:
+    caelestia_core = None
 
-KEYBINDS_CONF = Path.home() / ".config/hypr/hyprland/keybinds.conf"
-VARIABLES_CONF = Path.home() / ".config/hypr/variables.conf"
+KEYBINDS_LUA = Path.home() / ".config/hypr/keybinds.lua"
+VARIABLES_LUA = Path.home() / ".config/hypr/variables.lua"
+HYPR_VARS_LUA = Path.home() / ".config/caelestia/hypr-vars.lua"
+HYPR_USER_LUA = Path.home() / ".config/caelestia/hypr-user.lua"
+
+KEYBINDS_CONF = KEYBINDS_LUA
+VARIABLES_CONF = VARIABLES_LUA
 
 # ── Regex (aus hyprkeys übernommen) ──────────────────────────────────────────
 
@@ -49,28 +57,115 @@ DISPATCHERS = sorted([
 
 # ── Parser ────────────────────────────────────────────────────────────────────
 
-def _parse_variables(path: Path) -> dict:
-    if not path.exists():
-        return {}
-    try:
-        return caelestia_core.parse_variables(path.read_text())
-    except Exception as e:
-        print(f"Variablen-Parser fehler: {e}")
-        return {}
+def _parse_variables(path: Path | None = None) -> dict:
+    vars_dict = {}
+    if VARIABLES_LUA.exists():
+        try:
+            if caelestia_core is not None:
+                vars_dict.update(caelestia_core.parse_variables(VARIABLES_LUA.read_text()))
+        except Exception as e:
+            print(f"variables.lua parser fehler: {e}")
+    if HYPR_VARS_LUA.exists():
+        try:
+            if caelestia_core is not None:
+                vars_dict.update(caelestia_core.parse_variables(HYPR_VARS_LUA.read_text()))
+        except Exception as e:
+            print(f"hypr-vars.lua parser fehler: {e}")
+    return vars_dict
 
 
 def _resolve(raw: str, variables: dict) -> str:
-    return caelestia_core.resolve(raw, variables)
+    if caelestia_core is not None:
+        return caelestia_core.resolve(raw, variables)
+    res = raw.strip()
+    for k, v in sorted(variables.items(), key=lambda x: -len(x[0])):
+        res = res.replace(f"${k}", v)
+    return res
 
 
 def parse_keybinds() -> list[dict]:
-    if not KEYBINDS_CONF.exists():
+    target = KEYBINDS_LUA if KEYBINDS_LUA.exists() else KEYBINDS_CONF
+    if not target.exists():
         return []
-    variables = _parse_variables(VARIABLES_CONF)
+    variables = _parse_variables()
     binds = []
     try:
-        lines = KEYBINDS_CONF.read_text().splitlines()
+        lines = target.read_text().splitlines()
         for i, line in enumerate(lines):
+            line_s = line.strip()
+            if not line_s or line_s.startswith("--") or line_s.startswith("#"):
+                continue
+
+            lua_m = re.match(
+                r'^hl\.bind\s*\(\s*["\']([^"\']+)["\']\s*,\s*(.*?)\s*\)\s*(?:--\s*(.*))?$',
+                line_s
+            )
+            if lua_m:
+                combo, action, comment = lua_m.groups()
+                if "+" in combo:
+                    parts = combo.rsplit("+", 1)
+                    mod_raw = parts[0].strip()
+                    key_raw = parts[1].strip()
+                elif "," in combo:
+                    parts = combo.rsplit(",", 1)
+                    mod_raw = parts[0].strip()
+                    key_raw = parts[1].strip()
+                else:
+                    mod_raw = ""
+                    key_raw = combo.strip()
+
+                disp = "exec"
+                arg = ""
+                if "hl.dsp.exec_cmd" in action:
+                    disp = "exec"
+                    arg_m = re.search(r'hl\.dsp\.exec_cmd\s*\(\s*["\'](.*?)["\']\s*\)', action)
+                    if arg_m:
+                        arg = arg_m.group(1)
+                elif "hl.dsp.global" in action:
+                    disp = "global"
+                    arg_m = re.search(r'hl\.dsp\.global\s*\(\s*["\'](.*?)["\']\s*\)', action)
+                    if arg_m:
+                        arg = arg_m.group(1)
+                elif "hl.dsp.focus" in action:
+                    disp = "workspace"
+                    arg_m = re.search(r'workspace\s*=\s*["\']?([^"\'}]+)["\']?', action)
+                    if arg_m:
+                        arg = arg_m.group(1).strip()
+                elif "hl.dsp.window.move" in action:
+                    disp = "movetoworkspace"
+                    arg_m = re.search(r'workspace\s*=\s*["\']?([^"\'}]+)["\']?', action)
+                    if arg_m:
+                        arg = arg_m.group(1).strip()
+                else:
+                    act_clean = action.strip('"\'')
+                    if "," in act_clean:
+                        d, a = act_clean.split(",", 1)
+                        disp = d.strip()
+                        arg = a.strip()
+                    else:
+                        disp = act_clean.strip()
+
+                btype = "bind"
+                if "repeating" in action: btype = "binde"
+                elif "locked" in action: btype = "bindl"
+                elif "release" in action: btype = "bindr"
+                elif "mouse" in action: btype = "bindm"
+
+                binds.append({
+                    "id":                f"bind_{i}",
+                    "line_number":       i,
+                    "raw_line":          line,
+                    "bind_type":         btype,
+                    "modifier_raw":      mod_raw,
+                    "modifier_resolved": _resolve(mod_raw, variables),
+                    "key_raw":           key_raw,
+                    "key_resolved":      _resolve(key_raw, variables),
+                    "dispatcher":        disp,
+                    "argument":          arg,
+                    "comment":           (comment or "").strip(),
+                })
+                continue
+
             m = BIND_RE.match(line)
             if not m:
                 continue
@@ -96,19 +191,45 @@ def parse_keybinds() -> list[dict]:
 
 
 def _backup():
-    if KEYBINDS_CONF.exists():
+    target = KEYBINDS_LUA if KEYBINDS_LUA.exists() else KEYBINDS_CONF
+    if target.exists():
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        shutil.copy2(KEYBINDS_CONF,
-                     KEYBINDS_CONF.with_suffix(f".bak_{ts}.conf"))
+        shutil.copy2(target,
+                     target.with_suffix(f".bak_{ts}.lua"))
 
 
 def _build_line(data: dict) -> str:
-    line = f"{data['bind_type']} = {data['modifier']}, {data['key']}, {data['dispatcher']}"
-    if data.get("argument"):
-        line += f", {data['argument']}"
-    if data.get("comment"):
-        line += f"  # {data['comment']}"
-    return line
+    mod = data['modifier']
+    key = data['key']
+    combo = f"{mod} + {key}" if mod else key
+    disp = data['dispatcher']
+    arg = data.get("argument", "")
+    comment = f"  -- {data['comment']}" if data.get("comment") else ""
+
+    if disp == "exec":
+        arg_escaped = arg.replace('"', '\\"')
+        action = f'hl.dsp.exec_cmd("{arg_escaped}")'
+    elif disp == "global":
+        action = f'hl.dsp.global("{arg}")'
+    elif disp == "workspace":
+        action = f'hl.dsp.focus({{ workspace = "{arg}" }})'
+    elif disp == "movetoworkspace":
+        action = f'hl.dsp.window.move({{ workspace = "{arg}" }})'
+    else:
+        if arg:
+            action = f'"{disp}, {arg}"'
+        else:
+            action = f'"{disp}"'
+
+    btype = data.get("bind_type", "bind").lower()
+    flags = []
+    if "e" in btype: flags.append("repeating = true")
+    if "l" in btype: flags.append("locked = true")
+    if "r" in btype: flags.append("release = true")
+    if "m" in btype: flags.append("mouse = true")
+    flags_str = f", {{ {', '.join(flags)} }}" if flags else ""
+
+    return f'hl.bind("{combo}", {action}{flags_str}){comment}'
 
 
 def _find_line(lines: list[str], line_number: int, raw_line: str | None) -> int | None:
@@ -125,11 +246,12 @@ def _find_line(lines: list[str], line_number: int, raw_line: str | None) -> int 
 
 def save_keybind(data: dict, line_number: int | None = None, raw_line: str | None = None):
     _backup()
-    KEYBINDS_CONF.parent.mkdir(parents=True, exist_ok=True)
-    if not KEYBINDS_CONF.exists():
-        KEYBINDS_CONF.touch()
+    target = KEYBINDS_LUA
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.exists():
+        target.write_text("-- Keybinds managed by caelestia-settings\n-- Hand edits are fine, but the settings app may rewrite this file.\n\n")
     new_line = _build_line(data)
-    lines = KEYBINDS_CONF.read_text().splitlines()
+    lines = target.read_text().splitlines()
     if line_number is not None:
         idx = _find_line(lines, line_number, raw_line)
         if idx is not None:
@@ -138,7 +260,7 @@ def save_keybind(data: dict, line_number: int | None = None, raw_line: str | Non
             lines.append(new_line)
     else:
         lines.append(new_line)
-    KEYBINDS_CONF.write_text("\n".join(lines) + "\n")
+    target.write_text("\n".join(lines) + "\n")
     try:
         subprocess.run(["hyprctl", "reload"], capture_output=True, timeout=3)
     except Exception:
@@ -147,14 +269,18 @@ def save_keybind(data: dict, line_number: int | None = None, raw_line: str | Non
 
 def delete_keybind(line_number: int, raw_line: str | None = None):
     _backup()
-    lines = KEYBINDS_CONF.read_text().splitlines()
+    target = KEYBINDS_LUA if KEYBINDS_LUA.exists() else KEYBINDS_CONF
+    if not target.exists():
+        return
+    lines = target.read_text().splitlines()
     idx = _find_line(lines, line_number, raw_line)
     if idx is not None:
         lines.pop(idx)
-        KEYBINDS_CONF.write_text("\n".join(lines) + "\n")
+        target.write_text("\n".join(lines) + "\n")
     try:
         subprocess.run(["hyprctl", "reload"], capture_output=True, timeout=3)
     except Exception:
+        pass
         pass
 
 

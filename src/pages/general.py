@@ -1,7 +1,10 @@
 import re
 import subprocess
+import gi
+gi.require_version('Gtk', '4.0')
+gi.require_version('Adw', '1')
 from gi.repository import Gtk, Adw
-from src.config import HYPR_INPUT_CONF
+from src.config import HYPR_INPUT_LUA, HYPR_INPUT_CONF
 from src.lang import t
 
 # Gängige Tastaturlayouts: (xkb-Code, Anzeigename)
@@ -106,47 +109,57 @@ KEYBOARD_LAYOUTS = [
 ]
 
 
-def read_input_conf() -> dict:
-    """Liest input.conf und gibt ein Dict mit allen key=value zurück."""
+def read_input_lua() -> dict:
+    """Liest input.lua und gibt ein Dict mit kb_layout und numlock_by_default zurück."""
     result = {}
-    if not HYPR_INPUT_CONF.exists():
+    target = HYPR_INPUT_LUA if HYPR_INPUT_LUA.exists() else HYPR_INPUT_CONF
+    if not target.exists():
         return result
     try:
-        # Einfacher Parser der auch verschachtelte Blöcke ignoriert
-        content = HYPR_INPUT_CONF.read_text()
-        for line in content.splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "{" in line or "}" in line:
-                continue
-            if "=" in line:
-                k, _, v = line.partition("=")
-                result[k.strip()] = v.strip()
+        content = target.read_text()
+        m_layout = re.search(r'kb_layout\s*=\s*["\']([^"\']+)["\']', content)
+        if m_layout:
+            result["kb_layout"] = m_layout.group(1).split(",")[0].strip()
+        m_numlock = re.search(r'numlock_by_default\s*=\s*(true|false)', content, re.IGNORECASE)
+        if m_numlock:
+            result["numlock_by_default"] = m_numlock.group(1).lower()
     except Exception as e:
-        print(f"input.conf lesen fehler: {e}")
+        print(f"input.lua lesen fehler: {e}")
     return result
 
+read_input_conf = read_input_lua
 
-def _write_input_conf_key(key: str, value: str):
-    """Ersetzt einen Schlüssel in input.conf. Schreibt ihn ans Ende wenn nicht gefunden."""
-    if not HYPR_INPUT_CONF.exists():
+
+def _write_input_lua_key(key: str, value: str):
+    """Ersetzt einen Schlüssel in input.lua als valides Lua."""
+    target = HYPR_INPUT_LUA if HYPR_INPUT_LUA.exists() else HYPR_INPUT_CONF
+    if not target.exists():
         return
     try:
-        content = HYPR_INPUT_CONF.read_text()
-        pattern = rf"^(\s*{re.escape(key)}\s*=\s*).*"
-        new_line = rf"\g<1>{value}"
+        content = target.read_text()
+        if key == "numlock_by_default":
+            formatted_val = "true" if str(value).lower() == "true" else "false"
+        else:
+            formatted_val = f'"{value}"'
+
+        pattern = rf"^(\s*{re.escape(key)}\s*=\s*)[^,\n]+(,?)"
+        new_line = rf"\g<1>{formatted_val}\g<2>"
         new_content, n = re.subn(pattern, new_line, content, flags=re.MULTILINE)
         if n == 0:
-            # Schlüssel nicht gefunden — innerhalb des input {}-Blocks einfügen
-            new_content = re.sub(
-                r"(input\s*\{[^}]*)",
-                rf"\1    {key} = {value}\n",
-                content,
-                count=1,
-                flags=re.DOTALL,
-            )
-        HYPR_INPUT_CONF.write_text(new_content)
+            if "input = {" in content:
+                new_content = re.sub(
+                    r"(input\s*=\s*\{)",
+                    rf"\1\n        {key} = {formatted_val},",
+                    content,
+                    count=1
+                )
+            else:
+                new_content = content + f"\n{key} = {formatted_val}\n"
+        target.write_text(new_content)
     except Exception as e:
-        print(f"input.conf schreiben fehler: {e}")
+        print(f"input.lua schreiben fehler: {e}")
+
+_write_input_conf_key = _write_input_lua_key
 
 
 class GeneralPage(Gtk.Box):
@@ -184,7 +197,7 @@ class GeneralPage(Gtk.Box):
         # NumLock
         self.numlock_row = Adw.SwitchRow(
             title="NumLock beim Start aktivieren",
-            subtitle="numlock_by_default in input.conf"
+            subtitle="numlock_by_default in input.lua"
         )
         input_group.add(self.numlock_row)
 

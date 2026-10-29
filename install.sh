@@ -27,9 +27,26 @@ echo
 
 # --- 2. Install system dependencies ---
 echo ">>> STEP 1: Installing system dependencies..."
-echo "The script requires 'python-gobject', 'libadwaita', 'pamixer', 'git' and 'rust'."
+
+# Ensure ~/.cargo/bin is in PATH if rustup or user cargo is installed
+[ -d "$HOME/.cargo/bin" ] && export PATH="$HOME/.cargo/bin:$PATH"
+
+PKGS=("python-gobject" "libadwaita" "pamixer" "git" "python-psutil" "python-cairo")
+
+# Check if Rust toolchain (cargo and rustc) is already available
+if command -v cargo &>/dev/null && command -v rustc &>/dev/null; then
+    echo "   ...Rust toolchain already available ($(rustc --version))."
+elif command -v rustup &>/dev/null || pacman -Qq rustup &>/dev/null 2>&1; then
+    echo "   ...rustup detected. Ensuring default stable toolchain is installed..."
+    rustup default stable 2>/dev/null || rustup toolchain install stable 2>/dev/null || true
+else
+    echo "   ...Rust toolchain not found. Will install 'rust' via pacman."
+    PKGS+=("rust")
+fi
+
+echo "Packages to ensure: ${PKGS[*]}"
 echo "Please enter your sudo password:"
-sudo pacman -S --needed --noconfirm python-gobject libadwaita pamixer git python-psutil python-cairo rust
+sudo pacman -S --needed --noconfirm "${PKGS[@]}"
 echo "--- Dependencies installed."
 echo
 
@@ -74,7 +91,7 @@ if [ -d "$RUST_DIR" ]; then
 
     python3 -m venv "$BUILD_VENV"
     "$BUILD_VENV/bin/pip" install --quiet maturin
-    ( cd "$RUST_DIR" && "$BUILD_VENV/bin/maturin" build --release --out "$WHEEL_OUT" )
+    ( cd "$RUST_DIR" && PATH="$HOME/.cargo/bin:$PATH" "$BUILD_VENV/bin/maturin" build --release --out "$WHEEL_OUT" )
 
     WHEEL_FILE=$(find "$WHEEL_OUT" -name '*.whl' -print -quit)
     if [ -z "$WHEEL_FILE" ]; then
@@ -172,29 +189,30 @@ echo "--- App menu entry created."
 echo
 
 # --- 8. Configure Hyprland ---
-echo ">>> STEP 6: Configuring Hyprland..."
+echo ">>> STEP 6: Configuring Hyprland (Lua)..."
 
-HYPR_CONFIG_DIR="$HOME/.config/hypr"
-HYPR_CONFIG_FILE="$HYPR_CONFIG_DIR/hyprland.conf"
-HYPR_INCLUDES_DIR="$HYPR_CONFIG_DIR/hyprland"
-RULES_CONFIG_FILE="$HYPR_INCLUDES_DIR/rules.conf"
+CAELESTIA_CONFIG_DIR="$HOME/.config/caelestia"
+HYPR_USER_LUA="$CAELESTIA_CONFIG_DIR/hypr-user.lua"
 
-# The bind/source/polkit checks below used to be duplicated here; they now
-# live in doctor.sh so a standalone `./doctor.sh` run can repair them too.
 source "$SCRIPT_DIR/doctor.sh"
 run_hyprland_doctor
 
-NEW_RULES_TAG="# Caelestia Settings Rules"
-if ! grep -q -F "$NEW_RULES_TAG" "$RULES_CONFIG_FILE"; then
-    echo "   ...Writing window rules to $RULES_CONFIG_FILE."
-    cat >> "$RULES_CONFIG_FILE" <<- EOM
+NEW_RULES_TAG="-- Caelestia Settings Rules"
+if ! grep -q -F "org.caelestia.settings" "$HYPR_USER_LUA" 2>/dev/null; then
+    echo "   ...Writing window rules to $HYPR_USER_LUA."
+    RULE_BLOCK=$(cat <<- EOM
 
 $NEW_RULES_TAG
-windowrule = float true, match:class org\.caelestia\.settings
-windowrule = center 1, match:class org\.caelestia\.settings
+hl.window_rule({ match = { class = "org.caelestia.settings" }, float = true, center = true })
 EOM
+    )
+    if grep -q -F "return config" "$HYPR_USER_LUA" 2>/dev/null; then
+        sed -i "/return config/i $RULE_BLOCK\n" "$HYPR_USER_LUA"
+    else
+        printf '%s\n' "$RULE_BLOCK" >> "$HYPR_USER_LUA"
+    fi
 else
-    echo "   ...Window rules already exist in rules.conf."
+    echo "   ...Window rules already exist in $HYPR_USER_LUA."
 fi
 
 echo "--- Hyprland configuration done."

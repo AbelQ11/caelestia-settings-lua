@@ -26,9 +26,9 @@
 ### Monitor
 - Interactive drag-and-drop canvas — arrange monitors visually like Windows/GNOME
 - Per-monitor settings: resolution, refresh rate, rotation, bit depth (8/10-bit HDR), scale
-- Set primary monitor (`xrandr --primary` via `execs.conf`)
+- Set primary monitor (`xrandr --primary` via `execs.lua`)
 - Toggle taskbar visibility per monitor (`shell.json: bar.persistent`)
-- Rust-based parser for `monitors.conf` and `workspaces.conf`
+- Rust-based parser for `monitors.lua` and workspaces
 
 ### Workspaces
 - Visual editor grouped by monitor (physical order from `hyprctl monitors`)
@@ -38,20 +38,20 @@
 
 ### Keybinds
 - Full keybind editor — parser migrated from [HyprKeys](https://github.com/Jojo252511/hyprkeys)
-- `$variable` resolution (reads `variables.conf`)
+- `$variable` resolution (reads `variables.lua` and `hypr-vars.lua`)
 - Search and filter by bind type (`bind`, `binde`, `bindl` etc.)
 - Create, edit and delete keybinds with automatic backup before every change
 - Live reload via `hyprctl reload`
-- Rust-based parser for `keybinds.conf` and `variables.conf`
+- Rust-based parser for `keybinds.lua` and `variables.lua`
 
 ### Window Rules
 - App scanner — reads all `.desktop` files from system and user applications
-- Assign workspace per app (dynamically loaded from `monitors.conf`, including named special workspaces)
+- Assign workspace per app (dynamically loaded from `monitors.lua`, including named special workspaces)
 - Set float behavior and match type (`class` or `initial_title`)
 - Handles Spotify Wayland and Chromium web apps automatically
-- Reads and displays existing `rules.conf` — manual rules are preserved, never duplicated
+- Reads and displays existing `rules.lua` / `hypr-user.lua` — manual rules are preserved, never duplicated
 - Conflict detection — warns before saving if the same class is assigned twice
-- Rust-based parser for `rules.conf` for improved performance and reliability
+- Rust-based parser for `rules.lua` for improved performance and reliability
 
 ### General
 - Keyboard layout selector — ~90 XKB layouts with live Hyprland apply
@@ -134,8 +134,7 @@ The installer will:
 Removes the installed app, the `caelestia-settings` command, the `.desktop` entry, the
 app's window rules, and the `Super+I` keybind. Asks before removing your saved settings
 (`~/.config/caelestia-settings/`). Leaves installed packages, the `~/.local/bin` PATH
-setup, and shared Hyprland config lines (rules.conf/monitors.conf sourcing, Polkit
-autostart) untouched, since those aren't exclusive to this app. Pass `-y` to skip the
+setup, and shared Hyprland config files, since those aren't exclusive to this app. Pass `-y` to skip the
 confirmation prompt.
 
 ### Run without installing
@@ -162,9 +161,9 @@ python main.py
 |----------|--------|
 | `Super + I` | Open Caelestia Settings |
 
-To remove this shortcut, delete the following line from `~/.config/hypr/hyprland.conf`:
-```
-bind = SUPER, I, exec, caelestia-settings
+To remove this shortcut, delete the bind line from `~/.config/caelestia/hypr-user.lua` or `~/.config/hypr/keybinds.lua`:
+```lua
+hl.bind("SUPER + I", hl.dsp.exec_cmd("caelestia-settings"))
 ```
 
 ---
@@ -185,9 +184,9 @@ caelestia-settings/
 │   │   ├── Cargo.toml        # Package configuration
 │   │   └── src/
 │   │       ├── lib.rs        # Module exports
-│   │       ├── config.rs     # monitors.conf and workspaces.conf parsing
-│   │       ├── keybinds.rs    # keybinds.conf and variables.conf parsing
-│   │       ├── rules.rs       # rules.conf windowrule parsing
+│   │       ├── config.rs     # monitors.lua and workspaces parsing
+│   │       ├── keybinds.rs    # keybinds.lua and variables.lua parsing
+│   │       ├── rules.rs       # rules.lua / hypr-user.lua windowrule parsing
 │   │       ├── window_rule_conflicts.rs  # Conflict detection for window rules
 │   │       └── fans.rs       # PWM percent/raw conversion for fan control
 │   └── caelestia-py/          # PyO3 bindings exposing caelestia-core to Python
@@ -219,7 +218,7 @@ caelestia-settings/
 The application uses a hybrid Python + Rust architecture:
 
 - **Python/GTK4**: The main application, UI, and all user interaction logic is written in Python using GTK4 and Libadwaita
-- **Rust Core** (`caelestia-core`): Primary Rust crate providing all configuration file parsers (monitors.conf, workspaces.conf, keybinds.conf, variables.conf, rules.conf) and utility functions (PWM conversion, conflict detection)
+- **Rust Core** (`caelestia-core`): Primary Rust crate providing all configuration file parsers (monitors.lua, workspaces, keybinds.lua, variables.lua, rules.lua) and utility functions (PWM conversion, conflict detection)
 - **PyO3 Bridge** (`caelestia-py`): Exposes `caelestia-core` to Python via PyO3, allowing the Python code to call Rust functions as if they were native Python extensions
 
 This separation allows:
@@ -233,11 +232,11 @@ This separation allows:
 
 | File | What changes |
 |------|-------------|
-| `~/.config/hypr/hyprland/input.conf` | Keyboard layout, NumLock |
-| `~/.config/hypr/hyprland/monitors.conf` | Monitor resolution, position, rotation, scale + workspace assignments |
-| `~/.config/hypr/hyprland/rules.conf` | Window rules (managed block, manual rules preserved) |
-| `~/.config/hypr/hyprland/keybinds.conf` | Keybinds (with automatic `.bak` before every change) |
-| `~/.config/hypr/hyprland/execs.conf` | Primary monitor (`xrandr --primary`) |
+| `~/.config/hypr/hyprland/input.lua` | Keyboard layout, NumLock |
+| `~/.config/hypr/monitors.lua` | Monitor resolution, position, rotation, scale + workspace assignments |
+| `~/.config/caelestia/hypr-user.lua` | User window rules, custom keybinds |
+| `~/.config/hypr/keybinds.lua` | Keybinds (with automatic `.bak` before every change) |
+| `~/.config/hypr/hyprland/execs.lua` | Primary monitor (`xrandr --primary`), video wallpaper |
 | `~/.config/caelestia/shell.json` | Desktop clock settings, taskbar visibility |
 | `~/.config/caelestia-settings/window_rules.json` | Window rules cache |
 
@@ -306,9 +305,9 @@ Triggers on push and pull request to `main` and `dev` branches.
 - [x] In-app update UI
 - [x] English / German language support
 - [x] Fan & temperature monitoring with GPU fan control
-- [x] Rust module for monitors.conf parsing
-- [x] Rust module for keybinds.conf parsing
-- [x] Rust module for rules.conf parsing
+- [x] Rust module for monitors.lua parsing
+- [x] Rust module for keybinds.lua parsing
+- [x] Rust module for rules.lua parsing
 - [x] Rust module for window-rule conflict detection
 - [x] Rust module for fan PWM percentage conversion
 - [x] CI pipeline with Python and Rust linting/tests

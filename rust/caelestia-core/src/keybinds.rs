@@ -11,13 +11,14 @@ use std::collections::HashMap;
 /// forever (same limit as the Python original).
 const MAX_RESOLVE_PASSES: usize = 5;
 
-/// Parses all `$name = value` lines from variables.conf content and
+/// Parses all variable definitions from variables.conf or variables.lua / hypr-vars.lua content and
 /// resolves nested references between them.
 pub fn parse_variables(input: &str) -> HashMap<String, String> {
     let mut variables = HashMap::new();
+    let is_lua = input.contains("return {") || input.contains("return{") || input.contains("--");
 
     for line in input.lines() {
-        let Some((name, value)) = parse_variable_line(line) else {
+        let Some((name, value)) = parse_variable_line(line, is_lua) else {
             continue; // not a variable definition — skip
         };
         variables.insert(name.to_string(), value.to_string());
@@ -27,28 +28,71 @@ pub fn parse_variables(input: &str) -> HashMap<String, String> {
     variables
 }
 
-/// Extracts `(name, value)` from a single `$name = value  # comment` line.
-/// Returns `None` for anything that is not a variable definition.
-fn parse_variable_line(line: &str) -> Option<(&str, &str)> {
-    let rest = line.trim_start().strip_prefix('$')?;
-
-    // The name is the leading run of [A-Za-z0-9_] characters.
-    let name_len = rest
-        .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-        .unwrap_or(rest.len());
-    if name_len == 0 {
+/// Extracts `(name, value)` from a single variable definition line.
+/// In conf files, lines start with `$name = value`.
+/// In Lua files (inside tables), lines have `name = "value",`.
+fn parse_variable_line(line: &str, is_lua: bool) -> Option<(&str, &str)> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("--") {
         return None;
     }
-    let (name, rest) = rest.split_at(name_len);
 
-    let value = rest.trim_start().strip_prefix('=')?;
+    if let Some(rest) = trimmed.strip_prefix('$') {
+        // The name is the leading run of [A-Za-z0-9_] characters.
+        let name_len = rest
+            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .unwrap_or(rest.len());
+        if name_len == 0 {
+            return None;
+        }
+        let (name, rest) = rest.split_at(name_len);
 
-    // Cut a trailing `# comment` before trimming.
-    let value = match value.find('#') {
-        Some(idx) => &value[..idx],
-        None => value,
-    };
-    Some((name, value.trim()))
+        let value = rest.trim_start().strip_prefix('=')?;
+
+        // Cut a trailing `# comment` before trimming.
+        let value = match value.find('#') {
+            Some(idx) => &value[..idx],
+            None => value,
+        };
+        return Some((name, value.trim()));
+    }
+
+    if is_lua {
+        if trimmed.starts_with("return") || trimmed.starts_with("local") || trimmed.starts_with('}') {
+            return None;
+        }
+        // Lua table entry: key = "value", or key = value,
+        if let Some((k, v)) = trimmed.split_once('=') {
+            let key = k.trim();
+            if key.is_empty() || key.contains(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
+                return None;
+            }
+            let mut val = v.trim();
+            // Skip sub-table definitions
+            if val.starts_with('{') {
+                return None;
+            }
+            // Cut trailing comment
+            if let Some(idx) = val.find("--") {
+                val = val[..idx].trim();
+            } else if let Some(idx) = val.find('#') {
+                val = val[..idx].trim();
+            }
+            // Trim trailing comma
+            if let Some(stripped) = val.strip_suffix(',') {
+                val = stripped.trim();
+            }
+            // Trim matching quotes if string
+            if (val.starts_with('"') && val.ends_with('"')) || (val.starts_with('\'') && val.ends_with('\'')) {
+                val = &val[1..val.len() - 1];
+            }
+            if !key.is_empty() {
+                return Some((key, val));
+            }
+        }
+    }
+
+    None
 }
 
 /// Replaces every `$name` occurrence in `raw` with its value.
@@ -100,6 +144,24 @@ mod tests {
     fn parses_simple_variable() {
         let vars = parse_variables("$mainMod = SUPER");
         assert_eq!(vars["mainMod"], "SUPER");
+    }
+
+    #[test]
+    fn parses_lua_variables_table() {
+        let input = r#"
+return {
+    terminal     = "foot",
+    browser      = "firefox",
+    editor       = "codium",
+    touchpadScrollFactor = 0.3,
+    kbPinWindow  = "SUPER + SHIFT + P",
+}
+"#;
+        let vars = parse_variables(input);
+        assert_eq!(vars["terminal"], "foot");
+        assert_eq!(vars["browser"], "firefox");
+        assert_eq!(vars["editor"], "codium");
+        assert_eq!(vars["kbPinWindow"], "SUPER + SHIFT + P");
     }
 
     #[test]
