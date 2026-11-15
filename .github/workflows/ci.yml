@@ -38,28 +38,25 @@ jobs:
   lint-rust:
     runs-on: ubuntu-latest
     container: archlinux:latest
-    defaults:
-      run:
-        working-directory: rust
     steps:
       - run: pacman -Syu --noconfirm --needed git rustup
       - run: rustup default stable && rustup component add rustfmt clippy
       - uses: actions/checkout@v4
       - run: cargo fmt --all -- --check
+        working-directory: rust
       - run: cargo clippy --workspace --all-targets -- -D warnings
+        working-directory: rust
 
   test-rust:
     runs-on: ubuntu-latest
     container: archlinux:latest
     needs: lint-rust
-    defaults:
-      run:
-        working-directory: rust
     steps:
       - run: pacman -Syu --noconfirm --needed git rustup
       - run: rustup default stable
       - uses: actions/checkout@v4
       - run: cargo test --workspace
+        working-directory: rust
 
   secret-scan:
     runs-on: ubuntu-latest
