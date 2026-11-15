@@ -16,6 +16,7 @@ from src import backup
 
 CONFIG_PATH = Path.home() / ".config" / "kanshi" / "config"
 OUTPUT_RE = re.compile(r'^(?P<indent>\s*)output\s+"(?P<name>[^"]+)"\s*(?P<rest>.*)$')
+ENABLED_RE = re.compile(r"(?<!\S)enable(?!\S)")
 
 
 def available() -> bool:
@@ -97,6 +98,14 @@ def update_text(text: str, models) -> str:
             continue
         model = by_name.get(match.group("name"))
         if model is None:
+            lines.append(line)
+            continue
+        # Profiles describe layouts, so lines that disable an output (or
+        # outputs the user disabled in the app) are left untouched.  Only the
+        # settings of outputs that are enabled here and now are synced.
+        if getattr(model, "disabled", False) or not ENABLED_RE.search(
+            match.group("rest")
+        ):
             lines.append(line)
             continue
         # Preserve unknown options for this output.

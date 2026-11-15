@@ -756,6 +756,94 @@ class MonitorSettingsPanel(Gtk.Box):
         self._vrr_row.connect("notify::active", self._on_vrr_changed)
         self._group.add(self._vrr_row)
 
+        # ── ICC profile ──
+        self._icc_row = Adw.EntryRow(title=t("ICC profile"))
+        self._icc_row.set_show_apply_button(False)
+        self._icc_row.connect("changed", self._on_icc_changed)
+        self._group.add(self._icc_row)
+
+        # ── Mirror output ──
+        self._mirror_row = Adw.EntryRow(title=t("Mirror output"))
+        self._mirror_row.set_show_apply_button(False)
+        self._mirror_row.set_tooltip_text(
+            t("Name of the output to mirror, e.g. HDMI-A-1.")
+        )
+        self._mirror_row.connect("changed", self._on_mirror_changed)
+        self._group.add(self._mirror_row)
+
+        # ── SDR brightness / saturation ──
+        sdr_brightness_row = Adw.ActionRow(
+            title=t("SDR brightness"), subtitle="hl.monitor sdrbrightness"
+        )
+        self._sdr_brightness = Gtk.SpinButton.new_with_range(0.1, 10.0, 0.05)
+        self._sdr_brightness.set_digits(2)
+        self._sdr_brightness.set_valign(Gtk.Align.CENTER)
+        self._sdr_brightness.connect("value-changed", self._on_luminance_changed)
+        sdr_brightness_row.add_suffix(self._sdr_brightness)
+        self._group.add(sdr_brightness_row)
+
+        sdr_saturation_row = Adw.ActionRow(
+            title=t("SDR saturation"), subtitle="hl.monitor sdrsaturation"
+        )
+        self._sdr_saturation = Gtk.SpinButton.new_with_range(0.0, 2.0, 0.05)
+        self._sdr_saturation.set_digits(2)
+        self._sdr_saturation.set_valign(Gtk.Align.CENTER)
+        self._sdr_saturation.connect("value-changed", self._on_luminance_changed)
+        sdr_saturation_row.add_suffix(self._sdr_saturation)
+        self._group.add(sdr_saturation_row)
+
+        sdr_min_row = Adw.ActionRow(
+            title=t("SDR min luminance"), subtitle="hl.monitor sdr_min_luminance"
+        )
+        self._sdr_min = Gtk.SpinButton.new_with_range(0.0, 100.0, 0.01)
+        self._sdr_min.set_digits(2)
+        self._sdr_min.set_valign(Gtk.Align.CENTER)
+        self._sdr_min.connect("value-changed", self._on_luminance_changed)
+        sdr_min_row.add_suffix(self._sdr_min)
+        self._group.add(sdr_min_row)
+
+        sdr_max_row = Adw.ActionRow(
+            title=t("SDR max luminance"), subtitle="hl.monitor sdr_max_luminance"
+        )
+        self._sdr_max = Gtk.SpinButton.new_with_range(0.0, 10000.0, 10.0)
+        self._sdr_max.set_digits(0)
+        self._sdr_max.set_valign(Gtk.Align.CENTER)
+        self._sdr_max.connect("value-changed", self._on_luminance_changed)
+        sdr_max_row.add_suffix(self._sdr_max)
+        self._group.add(sdr_max_row)
+
+        # ── HDR luminance ──
+        min_luminance_row = Adw.ActionRow(
+            title=t("Minimum luminance"), subtitle="hl.monitor min_luminance"
+        )
+        self._min_luminance = Gtk.SpinButton.new_with_range(0.0, 10000.0, 0.01)
+        self._min_luminance.set_digits(2)
+        self._min_luminance.set_valign(Gtk.Align.CENTER)
+        self._min_luminance.connect("value-changed", self._on_luminance_changed)
+        min_luminance_row.add_suffix(self._min_luminance)
+        self._group.add(min_luminance_row)
+
+        max_luminance_row = Adw.ActionRow(
+            title=t("Maximum luminance"), subtitle="hl.monitor max_luminance"
+        )
+        self._max_luminance = Gtk.SpinButton.new_with_range(0.0, 10000.0, 10.0)
+        self._max_luminance.set_digits(0)
+        self._max_luminance.set_valign(Gtk.Align.CENTER)
+        self._max_luminance.connect("value-changed", self._on_luminance_changed)
+        max_luminance_row.add_suffix(self._max_luminance)
+        self._group.add(max_luminance_row)
+
+        max_avg_row = Adw.ActionRow(
+            title=t("Maximum average luminance"),
+            subtitle="hl.monitor max_avg_luminance",
+        )
+        self._max_avg_luminance = Gtk.SpinButton.new_with_range(0.0, 10000.0, 10.0)
+        self._max_avg_luminance.set_digits(0)
+        self._max_avg_luminance.set_valign(Gtk.Align.CENTER)
+        self._max_avg_luminance.connect("value-changed", self._on_luminance_changed)
+        max_avg_row.add_suffix(self._max_avg_luminance)
+        self._group.add(max_avg_row)
+
         # ── Scaling ──
         scale_row = Adw.ActionRow(title=t("Scale"))
         self._scale_combo = Gtk.ComboBoxText()

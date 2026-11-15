@@ -498,7 +498,8 @@ containers** (`archlinux:latest`), matching the supported distribution:
 - General Network page: devices, connections, VPN import and IPv4 editing
 - Monitor HDR/ICC/mirror controls, per-app audio, file associations and
   configurable backup retention
-- Kanshi-aware monitor scaling (Kanshi was overriding the app's scale)
+- Kanshi-aware monitor scaling (Kanshi was overriding the app's scale), with
+  layout-safe profile syncing and a regression test for the monitor panel
 - Bluetooth pairing agent, xvfb/shellcheck CI and tagged releases with checksums
 - Keybinds now edit `variables.lua` overrides, `config.binds` and managed `hl.bind` entries,
   with a key recorder and a live `hyprctl binds` view

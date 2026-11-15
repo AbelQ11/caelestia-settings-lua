@@ -29,6 +29,7 @@ One file per modification, newest last.
 | [22-packaging.md](22-packaging.md) | App icon and PKGBUILD packaging |
 | [23-bluetooth-ci-release.md](23-bluetooth-ci-release.md) | Bluetooth agent, xvfb/shellcheck CI, tagged releases |
 | [24-monitor-scale-kanshi.md](24-monitor-scale-kanshi.md) | Kanshi-aware monitor scale and valid scale choices |
+| [25-monitor-settings-panel.md](25-monitor-settings-panel.md) | Fix monitor settings panel crash and layout-safe Kanshi sync |
 
 ## Invariant
 

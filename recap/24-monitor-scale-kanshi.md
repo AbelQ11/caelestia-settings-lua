@@ -22,8 +22,8 @@ Hyprland/Kanshi round them to a value that keeps an integer logical resolution
 
 - New `src/kanshi.py`:
   - detects Kanshi and its config;
-  - rewrites `output` lines for every profile with the current
-    enabled/disabled state, mode, position and scale;
+  - rewrites `output` lines for every profile with the current enabled state,
+    mode, position and scale (lines that disable an output are left alone);
   - preserves unknown output options (e.g. `transform`);
   - backs up the Kanshi config and calls `kanshictl reload`.
 - `MonitorPage` now:
@@ -41,4 +41,4 @@ Hyprland/Kanshi round them to a value that keeps an integer logical resolution
   disabled outputs.
 - `tests/test_monitor_scales.py` — valid scale sets for 2560×1600 and 1920×1080.
 
-Total suite: **108 tests**.
+Total suite after this change: **108 tests** (110 after recap 25).

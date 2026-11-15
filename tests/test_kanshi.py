@@ -50,11 +50,26 @@ def test_update_preserves_unknown_output_options():
     assert "scale 1.25" in updated
 
 
-def test_update_disabled_output():
+def test_update_disabled_output_is_left_alone():
     text = """profile test {
     output "eDP-1" enable mode 2560x1600@240Hz position 0,0 scale 1.25
 }
 """
     updated = kanshi.update_text(text, [_model("eDP-1", disabled=True)])
+    assert "scale 1.25" in updated
+    assert 'output "eDP-1" enable' in updated
+
+
+def test_update_does_not_enable_disabled_profile_outputs():
+    text = """profile external-only {
+    output "eDP-1" disable
+    output "HDMI-A-1" enable mode preferred position 0,0
+}
+"""
+    models = [
+        _model("eDP-1", scale=1.6),
+        _model("HDMI-A-1", resolution="1920x1080", hz="60", scale=1),
+    ]
+    updated = kanshi.update_text(text, models)
     assert 'output "eDP-1" disable' in updated
-    assert "scale" not in updated
+    assert 'output "HDMI-A-1" enable mode 1920x1080@60Hz position 0,0 scale 1' in updated
