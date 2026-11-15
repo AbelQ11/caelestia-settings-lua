@@ -1,6 +1,6 @@
 {
   "name": "Caelestia Settings",
-  "beschreibung": "A settings app for Caelestia Hyprland setups.",
+  "description": "A native GTK4/Libadwaita control center for Caelestia on Hyprland's Lua configuration.",
   "author": "Jojo252511",
-  "version": "1.3.2"
+  "version": "2.0.0"
 }

@@ -23,7 +23,19 @@ try:
 except ImportError:
     _HAS_NVML = False
 
-import caelestia_core
+try:
+    import caelestia_core
+except ImportError:  # Optional Rust extension: use the same integer maths.
+    class _CoreFallback:
+        @staticmethod
+        def pwm_raw_to_percent(raw: int) -> int:
+            return (int(raw) * 200 + 255) // 510
+
+        @staticmethod
+        def percent_to_pwm_raw(percent: int) -> int:
+            return min(int(percent) * 255 // 100, 255)
+
+    caelestia_core = _CoreFallback()
 
 _HWMON = Path("/sys/class/hwmon")
 _CPU_TEMP_KEYS = ["k10temp", "coretemp", "cpu_thermal", "nct6798"]

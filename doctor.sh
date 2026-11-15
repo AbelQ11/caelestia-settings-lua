@@ -20,6 +20,22 @@ KEYBINDS_LUA_FILE="$HYPR_CONFIG_DIR/keybinds.lua"
 
 _DOCTOR_RESULTS=()
 
+# backup_file FILE
+#
+# Copy FILE to a timestamped sidecar and to the app's backup store before any
+# modification. Mirrors src/backup.py so the Backups page can restore it.
+backup_file() {
+    local file="$1"
+    [ -f "$file" ] || return 0
+    local ts
+    ts=$(date +%Y%m%d_%H%M%S)
+    cp -p "$file" "$file.bak.$ts" 2>/dev/null || true
+    local rel="${file#"$HOME"/}"
+    local dest="$HOME/.config/caelestia-settings/backups/$(dirname "$rel")"
+    mkdir -p "$dest"
+    cp -p "$file" "$dest/$(basename "$file").$ts.bak" 2>/dev/null || true
+}
+
 check_and_add() {
     local target_file="$1"
     local needle="$2"
@@ -32,9 +48,10 @@ check_and_add() {
         _DOCTOR_RESULTS+=("OK:    $label")
     else
         echo "   ...Adding: $label"
+        backup_file "$target_file"
         if [ -f "$target_file" ] && grep -q -F "return config" "$target_file"; then
             # Insert before "return config"
-            sed -i "/return config/i $content\n" "$target_file"
+            sed -i --follow-symlinks "/return config/i $content\n" "$target_file"
         else
             printf '%s\n' "$content" >> "$target_file"
         fi
@@ -48,7 +65,7 @@ run_hyprland_doctor() {
     mkdir -p "$HYPR_CONFIG_DIR"
     mkdir -p "$CAELESTIA_CONFIG_DIR"
     touch "$HYPR_LUA_FILE"
-    [ -f "$HYPR_USER_LUA" ] || echo "return {}" > "$HYPR_USER_LUA"
+    [ -f "$HYPR_USER_LUA" ] || printf 'local config = {}\n\nreturn config\n' > "$HYPR_USER_LUA"
     [ -f "$MONITOR_LUA_FILE" ] || touch "$MONITOR_LUA_FILE"
 
     _DOCTOR_RESULTS=()
@@ -60,6 +77,7 @@ run_hyprland_doctor() {
         _DOCTOR_RESULTS+=("OK:    monitors.lua require line")
     else
         echo "   ...Adding: monitors.lua require line to hyprland.lua"
+        backup_file "$HYPR_LUA_FILE"
         printf '\n-- Load monitor configuration if present\n%s\n' "$monitor_req" >> "$HYPR_LUA_FILE"
         _DOCTOR_RESULTS+=("FIXED: monitors.lua require line (was missing, now added)")
     fi

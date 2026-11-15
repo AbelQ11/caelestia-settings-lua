@@ -6,4 +6,5 @@ __pycache__/
 CLAUDE.md
 .mcp.json
 .ruff_cache/
+.pytest_cache/
 target/

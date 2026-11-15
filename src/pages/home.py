@@ -1,6 +1,8 @@
+import json
+import subprocess
 from pathlib import Path
 
-from gi.repository import Adw, GdkPixbuf, GLib, Gtk
+from gi.repository import Adw, Gdk, GdkPixbuf, GLib, Gtk
 
 from src.config import parse_monitors_conf
 from src.lang import t
@@ -19,7 +21,7 @@ _QUICK_ACTIONS = [
     ("mon", "video-display-symbolic",
      "Monitor", "Arrange displays and resolutions"),
     ("wifi", "network-wireless-symbolic",
-     "WLAN", "Scan and connect to networks"),
+     "Wi-Fi", "Scan and connect to networks"),
     ("keys", "preferences-desktop-keyboard-symbolic",
      "Keybinds", "View and edit shortcuts"),
     ("upd", "software-update-available-symbolic",
@@ -105,7 +107,7 @@ class HomePage(Gtk.Box):
         self._monitor_row = Adw.ActionRow(title=t("Monitors"))
         group.add(self._monitor_row)
 
-        self._wifi_row = Adw.ActionRow(title="WLAN")
+        self._wifi_row = Adw.ActionRow(title="Wi-Fi")
         group.add(self._wifi_row)
 
         self._layout_row = Adw.ActionRow(title=t("Keyboard Layout"))
@@ -155,18 +157,37 @@ class HomePage(Gtk.Box):
         self._wallpaper_row.set_subtitle(GLib.markup_escape_text(path.name))
 
         pixbuf = _load_thumbnail(path)
-        self._wallpaper_thumb.set_pixbuf(pixbuf)
+        if pixbuf is not None:
+            self._wallpaper_thumb.set_paintable(Gdk.Texture.new_for_pixbuf(pixbuf))
         self._wallpaper_thumb.set_visible(pixbuf is not None)
 
     def _refresh_monitors(self):
-        monitors = parse_monitors_conf()["monitors"]
+        monitors = []
+        try:
+            result = subprocess.run(
+                ["hyprctl", "monitors", "-j"], capture_output=True, text=True, timeout=3
+            )
+            if result.returncode == 0:
+                monitors = [
+                    {
+                        "name": monitor.get("name", ""),
+                        "resolution": f"{monitor.get('width', 0)}x{monitor.get('height', 0)}",
+                    }
+                    for monitor in json.loads(result.stdout)
+                ]
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+            pass
+
+        if not monitors:
+            monitors = parse_monitors_conf()["monitors"]
+
         if not monitors:
             self._monitor_row.set_subtitle(t("No monitors configured"))
             return
 
         summary = "  |  ".join(
-            f"{m['name']} · {m['resolution']}" if m["resolution"] else m["name"]
-            for m in monitors
+            f"{monitor['name']} · {monitor['resolution']}" if monitor.get("resolution") else monitor.get("name", "")
+            for monitor in monitors
         )
         self._monitor_row.set_subtitle(GLib.markup_escape_text(summary))
 
@@ -181,7 +202,7 @@ class HomePage(Gtk.Box):
         )
 
     def _refresh_layout(self):
-        layout = read_input_conf().get("kb_layout", "").lower()
+        layout = read_input_conf().get("primary_layout", "").lower()
         self._layout_row.set_subtitle(
             _layout_display_name(layout) if layout else t("Not available")
         )

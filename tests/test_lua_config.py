@@ -1,10 +1,9 @@
-import tempfile
-from pathlib import Path
+from src import lua
 from src.config import parse_monitors_conf, parse_rules_conf
 from src.pages.general import read_input_lua, _write_input_lua_key
 from src.pages.workspaces import _build_workspace_line
 from src.pages.monitor import _build_monitor_lua
-from src.pages.keybinds import parse_keybinds, _build_line
+from src.pages.keybinds import _build_line, _parse_config_binds
 
 
 def test_parse_monitors_lua(monkeypatch, tmp_path):
@@ -27,6 +26,8 @@ hl.workspace_rule({
     monitors_lua.write_text(lua_content)
 
     monkeypatch.setattr("src.config.HYPR_MONITORS_LUA", monitors_lua)
+    monkeypatch.setattr("src.config.HYPR_HYPRLAND_DIR", tmp_path / "hyprland")
+    monkeypatch.setattr("src.config.HYPR_USER_LUA", tmp_path / "hypr-user.lua")
 
     data = parse_monitors_conf()
     assert len(data["monitors"]) == 1
@@ -44,6 +45,7 @@ def test_parse_rules_lua(monkeypatch, tmp_path):
     rules_content = """
 hl.window_rule({ match = { class = "firefox" }, workspace = "2" })
 hl.window_rule({ match = { class = "org.caelestia.settings" }, float = true })
+-- hl.window_rule({ match = { class = "commented-out" }, float = true })
 """
     rules_lua = tmp_path / "rules.lua"
     rules_lua.write_text(rules_content)
@@ -52,9 +54,10 @@ hl.window_rule({ match = { class = "org.caelestia.settings" }, float = true })
     monkeypatch.setattr("src.config.HYPR_USER_LUA", tmp_path / "hypr-user.lua")
 
     rules = parse_rules_conf()
-    classes = [r["match_val"] for r in rules]
+    classes = [rule["match_val"] for rule in rules]
     assert "firefox" in classes
     assert "org.caelestia.settings" in classes
+    assert "commented-out" not in classes
 
 
 def test_input_lua_read_and_write(monkeypatch, tmp_path):
@@ -71,7 +74,17 @@ hl.config({
     input_lua = tmp_path / "input.lua"
     input_lua.write_text(input_content)
 
+    hypr_user = tmp_path / "hypr-user.lua"
+    hypr_user.write_text("local config = {}\n\nreturn config\n")
+
     monkeypatch.setattr("src.pages.general.HYPR_INPUT_LUA", input_lua)
+    monkeypatch.setattr("src.pages.general.HYPR_USER_LUA", hypr_user)
+    monkeypatch.setattr("src.pages.general._hypr_getoption", lambda _name: None)
+    monkeypatch.setattr("src.pages.general.reload_hyprland", lambda: True)
+    monkeypatch.setattr(
+        "src.pages.general.apply.write_and_reload",
+        lambda path, text, **kwargs: path.write_text(text),
+    )
 
     conf = read_input_lua()
     assert conf.get("kb_layout") == "us"
@@ -80,15 +93,18 @@ hl.config({
     _write_input_lua_key("kb_layout", "de")
     _write_input_lua_key("numlock_by_default", "false")
 
+    written = hypr_user.read_text()
+    assert 'kb_layout = "de"' in written
+    assert "numlock_by_default = false" in written
+    assert "BEGIN Caelestia Settings: input" in written
+
     conf_after = read_input_lua()
     assert conf_after.get("kb_layout") == "de"
     assert conf_after.get("numlock_by_default") == "false"
-    assert "numlock_by_default = false" in input_lua.read_text()
-    assert '"de"' in input_lua.read_text()
 
 
 def test_build_workspace_lua():
-    ws = {"number": 1, "monitor": "DP-1", "default": True, "persistent": False}
+    ws = {"workspace": "1", "number": 1, "monitor": "DP-1", "default": True, "persistent": False}
     line = _build_workspace_line(ws)
     assert 'workspace = "1"' in line
     assert 'monitor = "DP-1"' in line
@@ -106,3 +122,73 @@ def test_build_keybind_lua():
     }
     line = _build_line(data)
     assert 'hl.bind("SUPER + Return", hl.dsp.exec_cmd("foot"))  -- Terminal' in line
+
+
+def test_build_keybind_generic_dispatcher_uses_exec_raw():
+    data = {
+        "modifier": "SUPER",
+        "key": "Q",
+        "dispatcher": "killactive",
+        "argument": "",
+        "bind_type": "bind",
+    }
+    line = _build_line(data)
+    assert 'hl.dsp.exec_raw("killactive")' in line
+
+
+def test_monitor_builder_preserves_unknown_fields():
+    class Monitor:
+        name = "eDP-1"
+        file_output = "desc:AU Optronics 0x5AB1"
+        description = "AU Optronics 0x5AB1"
+        disabled = False
+        resolution = "2560x1600"
+        hz = "240.000"
+        x = 1920
+        y = 0
+        scale = 1.25
+        bitdepth = "10"
+        transform = "0"
+        cm = "srgb"
+        vrr = False
+        mirror = ""
+        extra_fields = {
+            "output": "desc:AU Optronics 0x5AB1",
+            "sdr_min_luminance": 0.2,
+            "sdr_max_luminance": 80,
+        }
+
+    text = _build_monitor_lua(Monitor())
+    assert 'output = "desc:AU Optronics 0x5AB1"' in text
+    assert 'mode = "2560x1600@240.000"' in text
+    assert "bitdepth = 10" in text
+    assert 'cm = "srgb"' in text
+    assert "sdr_min_luminance = 0.2" in text
+    assert "sdr_max_luminance = 80" in text
+
+
+def test_parse_keybinds_config_binds():
+    text = """
+local config = {}
+
+config.binds = {
+    { "SUPER", "K", "exec", "hyprctl switchkblayout current next" },
+}
+
+return config
+"""
+    # parse_keybinds reads the configured path, so exercise the parser directly.
+    binds = _parse_config_binds(text)
+    assert len(binds) == 1
+    assert binds[0]["modifier_raw"] == "SUPER"
+    assert binds[0]["key_raw"] == "K"
+    assert binds[0]["dispatcher"] == "exec"
+
+
+def test_managed_block_values_roundtrip():
+    text = "local config = {}\n\nreturn config\n"
+    new_text = lua.replace_managed_block(text, "input", 'hl.config({ input = { kb_layout = "us" } })')
+    assert "BEGIN Caelestia Settings: input" in new_text
+    assert new_text.index("BEGIN Caelestia Settings") < new_text.index("return config")
+    body = lua.strip_managed_block(new_text, "input")
+    assert 'kb_layout = "us"' in body

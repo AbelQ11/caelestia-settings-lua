@@ -6,9 +6,28 @@ set -e
 APP_PID=$1
 
 # --- CONFIGURATION ---
-GIT_REPO_URL="https://github.com/Jojo252511/caelestia-settings.git"
-GIT_BRANCH="main"
+GIT_REPO_URL="https://github.com/AbelQ11/caelestia-settings-lua.git"
+GIT_BRANCH="${CAELESTIA_SETTINGS_BRANCH:-}"
 TEMP_DIR="/tmp/caelestia-settings-update"
+API_URL="https://api.github.com/repos/AbelQ11/caelestia-settings-lua/releases/latest"
+
+if [ -z "$GIT_BRANCH" ]; then
+    GIT_BRANCH=$(python3 - "$API_URL" <<'PY' 2>/dev/null || true
+import json
+import sys
+import urllib.request
+try:
+    with urllib.request.urlopen(sys.argv[1], timeout=8) as response:
+        print(json.load(response).get("tag_name", ""))
+except Exception:
+    pass
+PY
+)
+fi
+if [ -z "$GIT_BRANCH" ]; then
+    GIT_BRANCH="dev"
+    echo "No release tag found; falling back to the dev branch."
+fi
 
 echo "#######################################"
 echo "###   Caelestia App Updater         ###"
@@ -28,8 +47,8 @@ echo ">>> [1/3] Cleaning up temporary files..."
 rm -rf "$TEMP_DIR"
 
 echo ">>> [2/3] Downloading latest version from Git..."
-echo "Repo: $GIT_REPO_URL (branch: $GIT_BRANCH)"
-if git clone --branch "$GIT_BRANCH" --single-branch "$GIT_REPO_URL" "$TEMP_DIR"; then
+echo "Repo: $GIT_REPO_URL (tag/branch: $GIT_BRANCH)"
+if git clone --depth 1 --branch "$GIT_BRANCH" --single-branch "$GIT_REPO_URL" "$TEMP_DIR"; then
     echo "   ...Download successful."
 else
     echo

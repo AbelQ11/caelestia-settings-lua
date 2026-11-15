@@ -33,15 +33,11 @@ echo ">>> STEP 1: Installing system dependencies..."
 
 PKGS=("python-gobject" "libadwaita" "pamixer" "git" "python-psutil" "python-cairo")
 
-# Check if Rust toolchain (cargo and rustc) is already available
+# Rust is optional: caelestia_core only adds faster parsers and fallbacks exist.
 if command -v cargo &>/dev/null && command -v rustc &>/dev/null; then
-    echo "   ...Rust toolchain already available ($(rustc --version))."
-elif command -v rustup &>/dev/null || pacman -Qq rustup &>/dev/null 2>&1; then
-    echo "   ...rustup detected. Ensuring default stable toolchain is installed..."
-    rustup default stable 2>/dev/null || rustup toolchain install stable 2>/dev/null || true
+    echo "   ...Rust toolchain available; the optional caelestia_core will be built."
 else
-    echo "   ...Rust toolchain not found. Will install 'rust' via pacman."
-    PKGS+=("rust")
+    echo "   ...Rust toolchain not found; skipping the optional caelestia_core build."
 fi
 
 echo "Packages to ensure: ${PKGS[*]}"
@@ -54,6 +50,8 @@ echo
 APP_DATA_DIR="$HOME/.local/share/caelestia-settings"
 BIN_DIR="$HOME/.local/bin"
 APP_LAUNCHER_DIR="$HOME/.local/share/applications"
+ICON_DIR="$HOME/.local/share/icons/hicolor/scalable/apps"
+ICON_SRC="$SCRIPT_DIR/assets/caelestia-settings.svg"
 
 APP_TARGET_MAIN="$APP_DATA_DIR/main.py"
 APP_TARGET_BIN="$BIN_DIR/caelestia-settings"
@@ -81,35 +79,37 @@ chmod +x "$APP_TARGET_MAIN"
 echo "   ...Copying 'src/' folder to $APP_DATA_DIR"
 cp -r "$SRC_FOLDER" "$APP_DATA_DIR/"
 
-# --- 5b. Build the caelestia_core Rust extension ---
-echo "   ...Building the caelestia_core Rust extension (this can take a minute)"
+# --- 5b. Build the optional caelestia_core Rust extension ---
 RUST_DIR="$SCRIPT_DIR/rust/caelestia-py"
-if [ -d "$RUST_DIR" ]; then
+if [ -d "$RUST_DIR" ] && command -v cargo &>/dev/null && command -v rustc &>/dev/null; then
+    echo "   ...Building the optional caelestia_core Rust extension (this can take a minute)"
     BUILD_VENV=$(mktemp -d)
     WHEEL_OUT=$(mktemp -d)
     trap 'rm -rf "$BUILD_VENV" "$WHEEL_OUT"' EXIT
 
     python3 -m venv "$BUILD_VENV"
-    "$BUILD_VENV/bin/pip" install --quiet maturin
-    ( cd "$RUST_DIR" && PATH="$HOME/.cargo/bin:$PATH" "$BUILD_VENV/bin/maturin" build --release --out "$WHEEL_OUT" )
+    "$BUILD_VENV/bin/pip" install --quiet maturin || true
+    ( cd "$RUST_DIR" && PATH="$HOME/.cargo/bin:$PATH" "$BUILD_VENV/bin/maturin" build --release --out "$WHEEL_OUT" ) || true
 
     WHEEL_FILE=$(find "$WHEEL_OUT" -name '*.whl' -print -quit)
     if [ -z "$WHEEL_FILE" ]; then
-        echo "ERROR: caelestia_core build produced no wheel."
-        exit 1
+        echo "WARNING: caelestia_core build produced no wheel; continuing without it."
     fi
-    UNPACK_DIR=$(mktemp -d)
-    trap 'rm -rf "$BUILD_VENV" "$WHEEL_OUT" "$UNPACK_DIR"' EXIT
-    python3 -m zipfile -e "$WHEEL_FILE" "$UNPACK_DIR"
-    rm -rf "$APP_DATA_DIR/caelestia_core"
-    cp -r "$UNPACK_DIR/caelestia_core" "$APP_DATA_DIR/"
-
-    rm -rf "$BUILD_VENV" "$WHEEL_OUT" "$UNPACK_DIR"
-    trap - EXIT
-    echo "   ...caelestia_core built and installed to $APP_DATA_DIR/caelestia_core"
+    if [ -n "$WHEEL_FILE" ]; then
+        UNPACK_DIR=$(mktemp -d)
+        trap 'rm -rf "$BUILD_VENV" "$WHEEL_OUT" "$UNPACK_DIR"' EXIT
+        python3 -m zipfile -e "$WHEEL_FILE" "$UNPACK_DIR"
+        rm -rf "$APP_DATA_DIR/caelestia_core"
+        cp -r "$UNPACK_DIR/caelestia_core" "$APP_DATA_DIR/"
+        echo "   ...caelestia_core built and installed to $APP_DATA_DIR/caelestia_core"
+        rm -rf "$BUILD_VENV" "$WHEEL_OUT" "$UNPACK_DIR"
+        trap - EXIT
+    else
+        rm -rf "$BUILD_VENV" "$WHEEL_OUT"
+        trap - EXIT
+    fi
 else
-    echo "ERROR: 'rust/caelestia-py' not found — cannot build the caelestia_core extension."
-    exit 1
+    echo "   ...Skipping optional caelestia_core build; Python fallbacks will be used."
 fi
 
 # Copy update script
@@ -174,13 +174,18 @@ echo
 
 # --- 7. Create app menu entry ---
 echo ">>> STEP 5: Creating app menu entry..."
+if [ -f "$ICON_SRC" ]; then
+    mkdir -p "$ICON_DIR"
+    cp "$ICON_SRC" "$ICON_DIR/caelestia-settings.svg"
+    command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" >/dev/null 2>&1 || true
+fi
 cat > "$APP_TARGET_DESKTOP" <<- EOM
 [Desktop Entry]
 Version=1.0.0
 Name=Caelestia Settings
 Comment=Manage Hyprland, monitor and audio settings
 Exec=caelestia-settings
-Icon=preferences-system-symbolic
+Icon=caelestia-settings
 Terminal=false
 Type=Application
 Categories=Settings;System;
@@ -206,8 +211,9 @@ $NEW_RULES_TAG
 hl.window_rule({ match = { class = "org.caelestia.settings" }, float = true, center = true })
 EOM
     )
+    backup_file "$HYPR_USER_LUA"
     if grep -q -F "return config" "$HYPR_USER_LUA" 2>/dev/null; then
-        sed -i "/return config/i $RULE_BLOCK\n" "$HYPR_USER_LUA"
+        sed -i --follow-symlinks "/return config/i $RULE_BLOCK\n" "$HYPR_USER_LUA"
     else
         printf '%s\n' "$RULE_BLOCK" >> "$HYPR_USER_LUA"
     fi
@@ -234,6 +240,9 @@ echo "3. With 'Super + I'"
 echo
 echo "--- Optional: Remove the Super+I shortcut ---"
 echo "To disable the Super+I keybind, remove the following line"
-echo "from your '~/.config/hypr/hyprland.conf':"
+echo "from '~/.config/caelestia/hypr-user.lua':"
 echo
-echo "bind = SUPER, I, exec, caelestia-settings"
+echo 'hl.bind("SUPER + I", hl.dsp.exec_cmd("caelestia-settings"))'
+echo
+echo "Every file modified by this installer was backed up first:"
+echo "  ~/.config/caelestia-settings/backups/"

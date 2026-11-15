@@ -1,0 +1,35 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build source archive and checksums
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          archive="caelestia-settings-lua-${tag}.tar.gz"
+          git archive --format=tar.gz --prefix="caelestia-settings-lua-${tag}/" -o "${archive}" HEAD
+          sha256sum "${archive}" > checksums.txt
+          cat checksums.txt
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          gh release create "$tag" \
+            "caelestia-settings-lua-${tag}.tar.gz" \
+            checksums.txt \
+            --generate-notes

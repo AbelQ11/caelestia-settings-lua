@@ -1,10 +1,25 @@
 import json
 import subprocess
+from pathlib import Path
+
 import cairo
+
+from src import apply, backup, lua, shell_config
+from src.config import (
+    HYPR_EXECS_LUA,
+    HYPR_HYPRLAND_DIR,
+    HYPR_MONITORS_LUA,
+    read_text,
+    hyprctl_config_errors,
+    reload_hyprland,
+    reload_hyprland_checked,
+    restart_caelestia,
+    write_text,
+)
 from src.lang import t
 from gi.repository import Gtk, Adw, GLib
 
-# ── Konstanten ────────────────────────────────────────────────────────────────
+# ── Constants ─────────────────────────────────────────────────────────────────
 
 ROTATION_OPTIONS = [
     ("0",   t("Normal (0°)")),
@@ -19,141 +34,226 @@ BITDEPTH_OPTIONS = [
     ("10", t("10 bit (HDR)")),
 ]
 
-# Farben für Monitor-Rechtecke (Index → RGBA)
-MONITOR_COLORS = [
-    (0.27, 0.52, 0.93, 1.0),   # Blau
-    (0.20, 0.78, 0.56, 1.0),   # Grün
-    (0.93, 0.47, 0.27, 1.0),   # Orange
-    (0.73, 0.40, 0.93, 1.0),   # Lila
-    (0.93, 0.27, 0.47, 1.0),   # Rot
+COLOUR_MANAGEMENT_OPTIONS = [
+    ("", "Automatic"),
+    ("srgb", "sRGB"),
+    ("wide", "Wide colour gamut"),
+    ("edid", "EDID"),
+    ("hdr", "HDR"),
+    ("dcip3", "DCI-P3"),
 ]
 
-CANVAS_H = 220   # Höhe der Vorschau-Canvas in Pixeln
+# Colours for monitor rectangles (index → RGBA)
+MONITOR_COLORS = [
+    (0.27, 0.52, 0.93, 1.0),   # Blue
+    (0.20, 0.78, 0.56, 1.0),   # Green
+    (0.93, 0.47, 0.27, 1.0),   # Orange
+    (0.73, 0.40, 0.93, 1.0),   # Purple
+    (0.93, 0.27, 0.47, 1.0),   # Red
+]
+
+CANVAS_H = 220   # Preview canvas height in pixels
 
 
 # ── Hilfsfunktionen ───────────────────────────────────────────────────────────
 
+def _monitor_file() -> Path:
+    for candidate in (HYPR_MONITORS_LUA, HYPR_HYPRLAND_DIR / "monitors.lua"):
+        if candidate.exists():
+            return candidate
+    return HYPR_MONITORS_LUA
+
+
+def _parse_monitor_blocks() -> list[dict]:
+    """All ``hl.monitor`` tables in the active monitor file."""
+
+    target = _monitor_file()
+    text = read_text(target)
+    blocks: list[dict] = []
+    if not text:
+        return blocks
+    for call in lua.iter_calls(text, {"hl.monitor"}):
+        if isinstance(call.table, dict):
+            blocks.append(call.table)
+    return blocks
+
+
+def _matches_live(block: dict, live: dict) -> bool:
+    output = str(block.get("output", "")).strip()
+    name = str(live.get("name", ""))
+    if output == name:
+        return True
+    if output.startswith("desc:"):
+        wanted = output[len("desc:"):].strip().lower()
+        return wanted == str(live.get("description", "")).strip().lower()
+    return False
+
+
 def _get_live_monitors() -> list[dict]:
-    """Liefert die aktuellen Monitor-Daten von hyprctl, angereichert mit
-    Extras aus monitors.conf (bitdepth)."""
+    """Current monitors from hyprctl, enriched with fields from monitors.lua."""
+
     try:
         res = subprocess.run(
             ["hyprctl", "monitors", "all", "-j"],
-            capture_output=True, text=True, check=True, timeout=3
+            capture_output=True, text=True, check=True, timeout=3,
         )
         monitors = json.loads(res.stdout)
-    except Exception as e:
-        print(f"hyprctl fehler: {e}")
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+        print(f"hyprctl error: {exc}")
         return []
 
-    # Extras aus monitors.conf lesen (bitdepth)
-    extras = _parse_conf_extras()
-    for m in monitors:
-        name = m.get("name", "")
-        if name in extras:
-            m.update(extras[name])
+    for monitor in monitors:
+        monitor.setdefault("description", "")
+        for block in _parse_monitor_blocks():
+            if not _matches_live(block, monitor):
+                continue
+            monitor["_file_output"] = block.get("output", monitor.get("name", ""))
+            monitor["_file_fields"] = block
+            monitor["bitdepth"] = str(block.get("bitdepth", ""))
+            monitor["cm"] = str(block.get("cm", ""))
+            monitor["mirror"] = str(block.get("mirror", ""))
+            monitor["icc"] = str(block.get("icc", ""))
+            monitor["sdrbrightness"] = block.get("sdrbrightness", 1)
+            monitor["sdrsaturation"] = block.get("sdrsaturation", 1)
+            monitor["sdr_min_luminance"] = block.get("sdr_min_luminance", 0.2)
+            monitor["sdr_max_luminance"] = block.get("sdr_max_luminance", 80)
+            monitor["min_luminance"] = block.get("min_luminance", 0)
+            monitor["max_luminance"] = block.get("max_luminance", 0)
+            monitor["max_avg_luminance"] = block.get("max_avg_luminance", 0)
+            if "vrr" in block:
+                monitor["vrr"] = block["vrr"]
+            break
     return monitors
 
 
 def _parse_conf_extras() -> dict:
-    """
-    Liest monitors.lua und extrahiert pro Monitor-Name:
-    { "DP-1": {"bitdepth": "10"}, "DP-2": {"bitdepth": ""} }
-    """
-    from src.config import HYPR_MONITORS_LUA, HYPR_MONITORS_CONF
-    target = HYPR_MONITORS_LUA if HYPR_MONITORS_LUA.exists() else HYPR_MONITORS_CONF
-    result = {}
-    if not target.exists():
-        return result
-    try:
-        content = target.read_text()
-        import re
-        for m in re.finditer(r'hl\.monitor\s*\(\s*\{([^}]+)\}\s*\)', content, re.DOTALL):
-            fields = {}
-            for line in m.group(1).splitlines():
-                line = line.strip().strip(",")
-                if "=" in line:
-                    k, _, v = line.partition("=")
-                    fields[k.strip()] = v.strip().strip('"\'')
-            if "output" in fields:
-                result[fields["output"]] = {"bitdepth": fields.get("bitdepth", "")}
+    """Compatibility helper: map file output names to their extras."""
 
-        for line in content.splitlines():
-            line = line.strip()
-            if not line.startswith("monitor") or "{" in line:
-                continue
-            rest = line.split("=", 1)[1]
-            tokens = [t.strip() for t in rest.split(",")]
-            if len(tokens) < 1:
-                continue
-            name = tokens[0]
-            extras = {"bitdepth": ""}
-            for i, tok in enumerate(tokens):
-                if tok.lower() == "bitdepth" and i + 1 < len(tokens):
-                    extras["bitdepth"] = tokens[i + 1].strip()
-            if name not in result:
-                result[name] = extras
-    except Exception as e:
-        print(f"Fehler beim Lesen von monitors.lua extras: {e}")
+    result = {}
+    for block in _parse_monitor_blocks():
+        output = block.get("output")
+        if output:
+            result[output] = {
+                "bitdepth": str(block.get("bitdepth", "")),
+                "cm": str(block.get("cm", "")),
+                "mirror": str(block.get("mirror", "")),
+                "vrr": block.get("vrr"),
+            }
     return result
+
 
 _parse_lua_extras = _parse_conf_extras
 
 
 def _apply_to_hyprland(monitors: list[dict]):
-    """Schickt alle Monitor-Konfigurationen live an Hyprland."""
-    for m in monitors:
-        keyword = _build_monitor_keyword(m)
+    """Apply monitor changes by reloading Hyprland after the file is written."""
+
+    for monitor in monitors:
         try:
             subprocess.run(
-                ["hyprctl", "keyword", "monitor", keyword],
-                check=True, timeout=3
+                ["hyprctl", "keyword", "monitor", _build_monitor_keyword(monitor)],
+                capture_output=True, timeout=3, check=False,
             )
-        except Exception as e:
-            print(f"hyprctl keyword fehler: {e}")
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"hyprctl monitor error: {exc}")
 
 
 def _build_monitor_lua(m) -> str:
+    output = getattr(m, "file_output", "") or m.name
+    fields: dict = {"output": output}
+
     if getattr(m, "disabled", False):
-        return f'hl.monitor({{\n  output = "{m.name}",\n  disabled = true,\n}})'
-    res_hz = f"{m.resolution}@{m.hz}" if getattr(m, "hz", None) else m.resolution
-    pos = f"{int(m.x)}x{int(m.y)}"
-    lines = [
-        "hl.monitor({",
-        f'  output = "{m.name}",',
-        f'  mode = "{res_hz}",',
-        f'  position = "{pos}",',
-        f'  scale = {m.scale},',
-    ]
-    if getattr(m, "bitdepth", None):
-        lines.append(f'  bitdepth = {m.bitdepth},')
-    if getattr(m, "transform", None) and str(m.transform) != "0":
-        lines.append(f'  transform = {m.transform},')
-    lines.append("})")
-    return "\n".join(lines)
+        fields["disabled"] = True
+    else:
+        res_hz = f"{m.resolution}@{m.hz}" if getattr(m, "hz", None) else m.resolution
+        fields["mode"] = res_hz
+        fields["position"] = f"{int(m.x)}x{int(m.y)}"
+        try:
+            fields["scale"] = float(m.scale)
+        except (TypeError, ValueError):
+            fields["scale"] = m.scale
+        if getattr(m, "bitdepth", ""):
+            bitdepth = str(m.bitdepth)
+            fields["bitdepth"] = int(bitdepth) if bitdepth.isdigit() else bitdepth
+        if getattr(m, "transform", "") not in ("", "0", 0):
+            fields["transform"] = int(m.transform)
+        if getattr(m, "cm", ""):
+            fields["cm"] = m.cm
+        if getattr(m, "vrr", None) not in (None, False):
+            fields["vrr"] = m.vrr
+        if getattr(m, "mirror", ""):
+            fields["mirror"] = m.mirror
+        if getattr(m, "icc", ""):
+            fields["icc"] = m.icc
+        for key, default in (
+            ("sdrbrightness", 1),
+            ("sdrsaturation", 1),
+            ("sdr_min_luminance", 0.2),
+            ("sdr_max_luminance", 80),
+            ("min_luminance", 0),
+            ("max_luminance", 0),
+            ("max_avg_luminance", 0),
+        ):
+            value = getattr(m, key, default)
+            try:
+                if float(value) != float(default):
+                    fields[key] = value
+            except (TypeError, ValueError):
+                pass
+
+    # Preserve every field the UI does not edit (reserved, eotf, ...).
+    if not getattr(m, "disabled", False):
+        for key, value in getattr(m, "extra_fields", {}).items():
+            fields.setdefault(key, value)
+
+    return f"hl.monitor({lua.format_value(fields)})"
 
 
 def _save_monitors_conf(monitors: list):
-    """Schreibt monitors.lua — behält workspace-Zeilen bei."""
-    from src.config import HYPR_MONITORS_LUA
-    HYPR_MONITORS_LUA.parent.mkdir(parents=True, exist_ok=True)
+    """Rewrite only the ``hl.monitor`` tables, preserving everything else."""
 
-    ws_lines = []
-    if HYPR_MONITORS_LUA.exists():
-        for line in HYPR_MONITORS_LUA.read_text().splitlines():
-            s = line.strip()
-            if "hl.workspace_rule" in s or s.startswith("workspace") or (s.startswith("--") and ws_lines):
-                ws_lines.append(line)
+    target = _monitor_file()
+    text = read_text(target)
+    calls = lua.iter_calls(text, {"hl.monitor"}) if text else []
 
-    lines = ["-- Auto-generated by Caelestia Settings – Monitore", ""]
-    for m in monitors:
-        lines.append(_build_monitor_lua(m))
-        lines.append("")
-    if ws_lines:
-        lines.append("-- Workspaces")
-        lines.extend(ws_lines)
+    replacements: list[tuple[int, int, str]] = []
+    used_calls: set[int] = set()
+    matched: set[int] = set()
+    for monitor in monitors:
+        match_index = None
+        for index, call in enumerate(calls):
+            if index in used_calls or not isinstance(call.table, dict):
+                continue
+            block = call.table
+            output = str(block.get("output", ""))
+            if output and (
+                output == getattr(monitor, "file_output", "")
+                or output == monitor.name
+                or (output.startswith("desc:") and output[5:].strip().lower() == monitor.description.strip().lower())
+            ):
+                match_index = index
+                break
+        new_block = _build_monitor_lua(monitor)
+        if match_index is not None:
+            used_calls.add(match_index)
+            matched.add(id(monitor))
+            call = calls[match_index]
+            replacements.append((call.start, call.end, new_block))
 
-    HYPR_MONITORS_LUA.write_text("\n".join(lines).rstrip() + "\n")
+    new_text = text
+    for start, end, rendered in sorted(replacements, key=lambda item: item[0], reverse=True):
+        new_text = new_text[:start] + rendered + new_text[end:]
+
+    missing = [m for m in monitors if id(m) not in matched]
+    if missing:
+        appended = "\n\n".join(_build_monitor_lua(m) for m in missing)
+        new_text = new_text.rstrip() + "\n\n" + appended + "\n"
+
+    if not new_text.strip():
+        new_text = "\n\n".join(_build_monitor_lua(m) for m in monitors) + "\n"
+
+    return backup.atomic_write_text(target, new_text)
+
 
 _save_monitors_lua = _save_monitors_conf
 
@@ -161,13 +261,12 @@ _save_monitors_lua = _save_monitors_conf
 # ── execs.lua Helpers ────────────────────────────────────────────────────────
 
 def _get_primary_monitor() -> str:
-    """Liest den aktuellen Hauptmonitor aus execs.lua."""
-    from pathlib import Path
-    from src.config import HYPR_EXECS_LUA
-    execs = HYPR_EXECS_LUA if HYPR_EXECS_LUA.exists() else Path.home() / ".config/hypr/hyprland/execs.conf"
+    """Read the current primary monitor from ``execs.lua``."""
+
+    execs = HYPR_EXECS_LUA
     if not execs.exists():
         return ""
-    for line in execs.read_text().splitlines():
+    for line in read_text(execs).splitlines():
         line = line.strip()
         if "xrandr" in line and "--primary" in line and "--output" in line:
             parts = line.split()
@@ -180,16 +279,14 @@ def _get_primary_monitor() -> str:
 
 
 def _set_primary_monitor(name: str):
-    """Schreibt/ersetzt die xrandr --primary Zeile in execs.lua."""
-    from pathlib import Path
-    from src.config import HYPR_EXECS_LUA
+    """Write the ``xrandr --primary`` line in ``execs.lua`` (with backup)."""
+
     execs = HYPR_EXECS_LUA
     execs.parent.mkdir(parents=True, exist_ok=True)
-
     new_line = f'    hl.exec_cmd("xrandr --output {name} --primary")'
 
     if execs.exists():
-        lines = execs.read_text().splitlines()
+        lines = read_text(execs).splitlines()
         replaced = False
         for i, line in enumerate(lines):
             if "xrandr" in line and "--primary" in line and "--output" in line:
@@ -205,51 +302,42 @@ def _set_primary_monitor(name: str):
                     break
             if not inserted:
                 lines.append(new_line)
-        execs.write_text("\n".join(lines) + "\n")
+        write_text(execs, "\n".join(lines) + "\n")
     else:
-        execs.write_text(f'hl.on("hyprland.start", function()\n{new_line}\nend)\n')
+        write_text(execs, f'hl.on("hyprland.start", function()\n{new_line}\nend)\n')
 
-    # Live anwenden
     try:
-        subprocess.run(["xrandr", "--output", name, "--primary"],
-                       timeout=3, capture_output=True)
-    except Exception as e:
-        print(f"xrandr fehler: {e}")
-        print(f"xrandr fehler: {e}")
+        subprocess.run(
+            ["xrandr", "--output", name, "--primary"],
+            timeout=3, capture_output=True, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"xrandr error: {exc}")
 
 
 # ── shell.json Helpers ───────────────────────────────────────────────────────
 
 def _get_bar_persistent(monitor_name: str) -> bool:
-    """Liest ob die Taskleiste für diesen Monitor persistent ist."""
-    import json
-    from pathlib import Path
-    shell = Path.home() / ".config/caelestia/monitors" / monitor_name / "shell.json"
-    if not shell.exists():
-        return True  # Standard: Taskleiste an
-    try:
-        data = json.loads(shell.read_text())
-        return data.get("bar", {}).get("persistent", True)
-    except Exception as e:
-        print(f"shell.json lesen fehler: {e}")
-        return True
+    """Whether the bar stays visible on this monitor (per-monitor override)."""
+
+    value = shell_config.read_monitor(monitor_name).get("bar", {}).get("persistent")
+    if value is None:
+        return bool(shell_config.get("bar.persistent", True))
+    return bool(value)
 
 
-def _set_bar_persistent(monitor_name: str, persistent: bool):
-    """Schreibt den persistent-Wert in shell.json."""
-    import json
-    from pathlib import Path
-    shell_dir = Path.home() / ".config/caelestia/monitors" / monitor_name
-    shell_dir.mkdir(parents=True, exist_ok=True)
-    shell = shell_dir / "shell.json"
+def _set_bar_persistent(monitor_name: str, persistent: bool, *, restart: bool = True):
+    """Write ``bar.persistent`` to the monitor's shell.json override."""
+
     try:
-        data = {}
-        if shell.exists():
-            data = json.loads(shell.read_text())
-        data.setdefault("bar", {})["persistent"] = persistent
-        shell.write_text(json.dumps(data, indent=4))
-    except Exception as e:
-        print(f"shell.json schreiben fehler: {e}")
+        shell_config.set_monitor_value(
+            monitor_name, "bar.persistent", persistent, restart=restart
+        )
+    except backup.BackupError as exc:
+        print(f"Could not back up shell.json: {exc}")
+        raise
+    except Exception as exc:  # pragma: no cover - defensive UI path
+        print(f"Could not write shell.json: {exc}")
 
 
 def _build_monitor_keyword(m) -> str:
@@ -289,7 +377,7 @@ def _parse_mode(mode_str: str) -> tuple[str, str]:
 # ── Monitor-Datenmodell ───────────────────────────────────────────────────────
 
 class MonitorModel:
-    """Hält den Zustand eines Monitors (editierbar)."""
+    """Editable monitor state."""
 
     def __init__(self, data: dict):
         self.name        = data["name"]
@@ -302,23 +390,36 @@ class MonitorModel:
         self.transform   = str(int(data.get("transform", 0)))
         self.disabled    = data.get("disabled", False)
 
-        # Aktive Auflösung + Hz
+        # Active resolution + refresh rate
         self.resolution  = f"{self.width}x{self.height}"
         self.hz          = f"{round(data.get('refreshRate', 60), 3):.3f}"
 
-        # Bitdepth aus monitors.conf (via _parse_conf_extras angereichert)
-        self.bitdepth    = str(data.get("bitdepth", ""))
-        # Hauptmonitor-Flag — wird separat aus execs.conf gesetzt
-        self.primary     = False
-        # Taskleiste persistent — wird aus shell.json geladen
+        # Fields preserved from monitors.lua
+        self.bitdepth = str(data.get("bitdepth", ""))
+        self.cm = str(data.get("cm", ""))
+        self.vrr = data.get("vrr")
+        self.mirror = str(data.get("mirror", ""))
+        self.icc = str(data.get("icc", ""))
+        self.sdrbrightness = data.get("sdrbrightness", 1)
+        self.sdrsaturation = data.get("sdrsaturation", 1)
+        self.sdr_min_luminance = data.get("sdr_min_luminance", 0.2)
+        self.sdr_max_luminance = data.get("sdr_max_luminance", 80)
+        self.min_luminance = data.get("min_luminance", 0)
+        self.max_luminance = data.get("max_luminance", 0)
+        self.max_avg_luminance = data.get("max_avg_luminance", 0)
+        self.file_output = str(data.get("_file_output", self.name))
+        self.extra_fields = dict(data.get("_file_fields") or {})
+
+        # Set separately by the page
+        self.primary = False
         self.bar_persistent = True
 
-        # Alle Modi
+        # All available modes
         self.available_modes: list[str] = data.get("availableModes", [])
         if not self.available_modes:
             self.available_modes = [f"{self.resolution}@{self.hz}Hz"]
 
-        # Deduplizierte Auflösungen + Hz-Optionen pro Auflösung
+        # Deduplicated resolutions + refresh rates per resolution
         self._res_map: dict[str, list[str]] = {}
         for mode in self.available_modes:
             r, h = _parse_mode(mode)
@@ -326,8 +427,7 @@ class MonitorModel:
 
     @property
     def logical_w(self) -> float:
-        """Logische Breite. hyprctl liefert bereits getauschte width/height
-        bei rotierten Monitoren, also immer width/scale."""
+        """Logical width; hyprctl already swaps width/height on rotated outputs."""
         return self.width / self.scale
 
     @property
@@ -360,8 +460,8 @@ class MonitorModel:
 class MonitorCanvas(Gtk.DrawingArea):
     """
     Zeichnet alle Monitore als Rechtecke.
-    Klick → Monitor auswählen.
-    Drag → Monitor verschieben (snap an anderen Monitoren).
+    Click → select a monitor.
+    Drag → move a monitor (snaps to neighbours).
     """
 
     def __init__(self, on_select_cb):
@@ -378,7 +478,7 @@ class MonitorCanvas(Gtk.DrawingArea):
         self.set_content_height(CANVAS_H)
         self.set_draw_func(self._draw)
 
-        # Gesten
+        # Gestures
         click = Gtk.GestureClick()
         click.connect("pressed", self._on_press)
         self.add_controller(click)
@@ -392,7 +492,7 @@ class MonitorCanvas(Gtk.DrawingArea):
     # ── Koordinaten-Umrechnung ────────────────────────────────────────────
 
     def _canvas_rect(self, m: MonitorModel, scale: float, ox: float, oy: float):
-        """Gibt (cx, cy, cw, ch) in Canvas-Pixeln zurück."""
+        """Return (cx, cy, cw, ch) in canvas pixels."""
         cw = max(m.logical_w * scale, 40)
         ch = max(m.logical_h * scale, 30)
         cx = ox + m.x * scale
@@ -400,7 +500,7 @@ class MonitorCanvas(Gtk.DrawingArea):
         return cx, cy, cw, ch
 
     def _view_scale_offset(self) -> tuple[float, float, float]:
-        """Berechnet Skalierungsfaktor und Offset so dass alle Monitore passen."""
+        """Scale factor and offset so that every monitor fits."""
         if not self.monitors:
             return 0.1, 20, 20
 
@@ -430,12 +530,12 @@ class MonitorCanvas(Gtk.DrawingArea):
     def _draw(self, area, cr, w, h):
         s, ox, oy = self._view_scale_offset()
 
-        # Hintergrund
+        # Background
         cr.set_source_rgba(0.12, 0.12, 0.12, 1)
         cr.rectangle(0, 0, w, h)
         cr.fill()
 
-        # Gitter
+        # Grid
         cr.set_source_rgba(1, 1, 1, 0.04)
         cr.set_line_width(1)
         step = 40
@@ -452,18 +552,18 @@ class MonitorCanvas(Gtk.DrawingArea):
             r, g, b, a = MONITOR_COLORS[i % len(MONITOR_COLORS)]
             selected = (m is self.selected)
 
-            # Schatten
+            # Shadow
             cr.set_source_rgba(0, 0, 0, 0.4)
             cr.rectangle(cx + 4, cy + 4, cw, ch)
             cr.fill()
 
-            # Füllung
+            # Fill
             alpha = 1.0 if selected else 0.75
             cr.set_source_rgba(r * 0.6, g * 0.6, b * 0.6, alpha)
             cr.rectangle(cx, cy, cw, ch)
             cr.fill()
 
-            # Rahmen
+            # Border
             lw = 3 if selected else 1.5
             cr.set_line_width(lw)
             cr.set_source_rgba(r, g, b, 1.0)
@@ -480,7 +580,7 @@ class MonitorCanvas(Gtk.DrawingArea):
             cr.move_to(cx + cw/2 - ext.width/2, cy + ch/2 - 2)
             cr.show_text(m.name)
 
-            # Auflösung
+            # Resolution
             res_str = f"{m.resolution}@{float(m.hz):.0f}Hz"
             cr.set_font_size(max(font_size * 0.7, 7))
             cr.set_source_rgba(1, 1, 1, 0.7)
@@ -489,7 +589,7 @@ class MonitorCanvas(Gtk.DrawingArea):
                 cr.move_to(cx + cw/2 - ext2.width/2, cy + ch/2 + font_size)
                 cr.show_text(res_str)
 
-            # Rotation-Indikator
+            # Redation indicator
             if m.transform != "0":
                 deg = {"1": "90°", "2": "180°", "3": "270°"}.get(m.transform, "")
                 cr.set_font_size(max(font_size * 0.65, 7))
@@ -555,10 +655,10 @@ class MonitorCanvas(Gtk.DrawingArea):
                         m.y += oy_ - my
 
 
-# ── Einstellungs-Panel ────────────────────────────────────────────────────────
+# ── Settings panel ──────────────────────────────────────────────────────────
 
 class MonitorSettingsPanel(Gtk.Box):
-    """Zeigt Einstellungen für den ausgewählten Monitor."""
+    """Settings for the selected monitor."""
 
     def __init__(self):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -590,7 +690,7 @@ class MonitorSettingsPanel(Gtk.Box):
         self._group.set_margin_end(12)
         scroller.set_child(self._group)
 
-        # ── Auflösung ──
+        # ── Resolution ──
         res_row = Adw.ActionRow(title=t("Resolution"))
         self._res_combo = Gtk.ComboBoxText()
         self._res_combo.set_valign(Gtk.Align.CENTER)
@@ -598,7 +698,7 @@ class MonitorSettingsPanel(Gtk.Box):
         res_row.add_suffix(self._res_combo)
         self._group.add(res_row)
 
-        # ── Bildwiederholrate ──
+        # ── Refresh rate ──
         hz_row = Adw.ActionRow(title=t("Refresh rate"))
         self._hz_combo = Gtk.ComboBoxText()
         self._hz_combo.set_valign(Gtk.Align.CENTER)
@@ -606,7 +706,7 @@ class MonitorSettingsPanel(Gtk.Box):
         hz_row.add_suffix(self._hz_combo)
         self._group.add(hz_row)
 
-        # ── Drehung ──
+        # ── Rotation ──
         rot_row = Adw.ActionRow(title=t("Rotation"))
         self._rot_combo = Gtk.ComboBoxText()
         self._rot_combo.set_valign(Gtk.Align.CENTER)
@@ -616,7 +716,7 @@ class MonitorSettingsPanel(Gtk.Box):
         rot_row.add_suffix(self._rot_combo)
         self._group.add(rot_row)
 
-        # ── Farbtiefe ──
+        # ── Bit depth ──
         bd_row = Adw.ActionRow(title=t("Bit depth"))
         self._bd_combo = Gtk.ComboBoxText()
         self._bd_combo.set_valign(Gtk.Align.CENTER)
@@ -626,7 +726,22 @@ class MonitorSettingsPanel(Gtk.Box):
         bd_row.add_suffix(self._bd_combo)
         self._group.add(bd_row)
 
-        # ── Skalierung ──
+        # ── Colour management ──
+        cm_row = Adw.ActionRow(title=t("Colour management"), subtitle="hl.monitor cm")
+        self._cm_combo = Gtk.ComboBoxText()
+        self._cm_combo.set_valign(Gtk.Align.CENTER)
+        for cm_id, cm_label in COLOUR_MANAGEMENT_OPTIONS:
+            self._cm_combo.append(cm_id, cm_label)
+        self._cm_combo.connect("changed", self._on_cm_changed)
+        cm_row.add_suffix(self._cm_combo)
+        self._group.add(cm_row)
+
+        # ── Variable refresh rate ──
+        self._vrr_row = Adw.SwitchRow(title=t("Variable refresh rate (VRR)"))
+        self._vrr_row.connect("notify::active", self._on_vrr_changed)
+        self._group.add(self._vrr_row)
+
+        # ── Scaling ──
         scale_row = Adw.ActionRow(title=t("Scale"))
         self._scale_spin = Gtk.SpinButton.new_with_range(0.25, 4.0, 0.25)
         self._scale_spin.set_digits(2)
@@ -635,12 +750,12 @@ class MonitorSettingsPanel(Gtk.Box):
         scale_row.add_suffix(self._scale_spin)
         self._group.add(scale_row)
 
-        # ── Aktiviert ──
+        # ── Enabled ──
         self._enabled_row = Adw.SwitchRow(title=t("Monitor enabled"))
         self._enabled_row.connect("notify::active", self._on_enabled_changed)
         self._group.add(self._enabled_row)
 
-        # ── Hauptmonitor ──
+        # ── Primary monitor ──
         self._primary_row = Adw.SwitchRow(
             title=t("Primary monitor"),
             subtitle=t("xrandr --primary (for X11 apps and tray)")
@@ -648,7 +763,7 @@ class MonitorSettingsPanel(Gtk.Box):
         self._primary_row.connect("notify::active", self._on_primary_changed)
         self._group.add(self._primary_row)
 
-        # ── Taskleiste ──
+        # ── Taskbar ──
         self._bar_row = Adw.SwitchRow(
             title=t("Always show taskbar"),
             subtitle="shell.json: bar.persistent"
@@ -670,13 +785,13 @@ class MonitorSettingsPanel(Gtk.Box):
         self._panel.set_visible(True)
         self._group.set_title(f"{m.name}  –  {m.description}")
 
-        # Auflösungen laden
+        # Resolutionen laden
         self._res_combo.remove_all()
         for r in m.resolutions():
             self._res_combo.append(r, r)
         self._res_combo.set_active_id(m.resolution)
 
-        # Hz laden — normalisiere auf 3 Nachkommastellen für konsistenten Vergleich
+        # Load refresh rates, normalized to 3 decimals for stable comparison
         self._reload_hz(m.resolution)
         hz_norm = f"{float(m.hz):.3f}" if m.hz else ""
         if not self._hz_combo.set_active_id(hz_norm):
@@ -686,8 +801,20 @@ class MonitorSettingsPanel(Gtk.Box):
             if first:
                 m.hz = first
 
-        self._rot_combo.set_active_id(m.transform)
+        self._rot_combo.set_active_id(m.transform or "0")
         self._bd_combo.set_active_id(m.bitdepth if m.bitdepth else "")
+        if not self._cm_combo.set_active_id(m.cm or ""):
+            self._cm_combo.set_active_id("")
+        self._vrr_row.set_active(bool(m.vrr))
+        self._icc_row.set_text(m.icc)
+        self._mirror_row.set_text(m.mirror)
+        self._sdr_brightness.set_value(float(m.sdrbrightness or 1))
+        self._sdr_saturation.set_value(float(m.sdrsaturation or 1))
+        self._sdr_min.set_value(float(m.sdr_min_luminance or 0))
+        self._sdr_max.set_value(float(m.sdr_max_luminance or 0))
+        self._min_luminance.set_value(float(m.min_luminance or 0))
+        self._max_luminance.set_value(float(m.max_luminance or 0))
+        self._max_avg_luminance.set_value(float(m.max_avg_luminance or 0))
         self._scale_spin.set_value(m.scale)
         self._enabled_row.set_active(not m.disabled)
         self._primary_row.set_active(m.primary)
@@ -699,7 +826,7 @@ class MonitorSettingsPanel(Gtk.Box):
         self._hz_combo.remove_all()
         if not self._monitor: return
         for h in self._monitor.hz_for_resolution(resolution):
-            # ID immer als 3-Dezimalstellen-String für konsistenten Vergleich
+            # IDs are always 3-decimal strings for stable comparison
             h_norm = f"{float(h):.3f}"
             self._hz_combo.append(h_norm, f"{float(h):.2f} Hz")
 
@@ -713,7 +840,7 @@ class MonitorSettingsPanel(Gtk.Box):
         self._monitor.height = int(h)
         self._loading = True
         self._reload_hz(res)
-        # Höchste Hz als Default
+        # Default to the highest refresh rate
         hz_list = self._monitor.hz_for_resolution(res)
         if hz_list:
             self._hz_combo.set_active_id(hz_list[0])
@@ -735,6 +862,33 @@ class MonitorSettingsPanel(Gtk.Box):
         bd = combo.get_active_id()
         if bd is not None: self._monitor.bitdepth = bd
 
+    def _on_cm_changed(self, combo):
+        if self._loading or not self._monitor: return
+        cm = combo.get_active_id()
+        if cm is not None: self._monitor.cm = cm
+
+    def _on_vrr_changed(self, row, _):
+        if self._loading or not self._monitor: return
+        self._monitor.vrr = row.get_active()
+
+    def _on_icc_changed(self, row):
+        if self._loading or not self._monitor: return
+        self._monitor.icc = row.get_text().strip()
+
+    def _on_mirror_changed(self, row):
+        if self._loading or not self._monitor: return
+        self._monitor.mirror = row.get_text().strip()
+
+    def _on_luminance_changed(self, *_):
+        if self._loading or not self._monitor: return
+        self._monitor.sdrbrightness = round(self._sdr_brightness.get_value(), 2)
+        self._monitor.sdrsaturation = round(self._sdr_saturation.get_value(), 2)
+        self._monitor.sdr_min_luminance = round(self._sdr_min.get_value(), 2)
+        self._monitor.sdr_max_luminance = int(self._sdr_max.get_value())
+        self._monitor.min_luminance = round(self._min_luminance.get_value(), 2)
+        self._monitor.max_luminance = int(self._max_luminance.get_value())
+        self._monitor.max_avg_luminance = int(self._max_avg_luminance.get_value())
+
     def _on_scale_changed(self, spin):
         if self._loading or not self._monitor: return
         self._monitor.scale = spin.get_value()
@@ -750,9 +904,9 @@ class MonitorSettingsPanel(Gtk.Box):
     def _on_primary_changed(self, row, _):
         if self._loading or not self._monitor: return
         self._monitor.primary = row.get_active()
-        # Nur einer kann primär sein → alle anderen auf False
+        # Only one monitor can be primary
         if row.get_active():
-            # Signal wird von MonitorPage via callback propagiert
+            # Propagated to MonitorPage via callback
             if hasattr(self, "_on_primary_exclusive_cb") and self._on_primary_exclusive_cb:
                 self._on_primary_exclusive_cb(self._monitor)
 
@@ -776,17 +930,17 @@ class MonitorPage(Gtk.Box):
         canvas_frame.set_child(self._canvas)
         self.append(canvas_frame)
 
-        # Canvas-Hinweis
+        # Canvas hint
         hint = Gtk.Label(label=t("Click to select  •  Drag to move"))
         hint.add_css_class("caption")
         hint.set_margin_top(4)
         hint.set_margin_bottom(8)
         self.append(hint)
 
-        # ── Trennlinie ──
+        # ── Separator ──
         self.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
-        # ── Einstellungs-Panel ──
+        # ── Settings panel ──
         self._settings_panel = MonitorSettingsPanel()
         self._settings_panel._on_primary_exclusive_cb = self._on_primary_exclusive
         self.append(self._settings_panel)
@@ -815,7 +969,7 @@ class MonitorPage(Gtk.Box):
         raw = _get_live_monitors()
         self._monitors = [MonitorModel(m) for m in raw]
 
-        # Hauptmonitor aus execs.conf markieren
+        # Mark the primary monitor from execs.lua
         primary_name = _get_primary_monitor()
         for m in self._monitors:
             m.primary = (m.name == primary_name)
@@ -831,25 +985,42 @@ class MonitorPage(Gtk.Box):
         self._canvas.queue_draw()
 
     def _on_primary_exclusive(self, primary_mon: MonitorModel):
-        """Stellt sicher dass nur ein Monitor als primär markiert ist."""
+        """Ensure only one monitor is marked primary."""
         for m in self._monitors:
             if m is not primary_mon:
                 m.primary = False
 
     def _on_apply(self, _btn):
-        _apply_to_hyprland(self._monitors)
-        _save_monitors_conf(self._monitors)
-        # Hauptmonitor speichern
-        for m in self._monitors:
-            if m.primary:
-                _set_primary_monitor(m.name)
-            # Taskleiste speichern
-            _set_bar_persistent(m.name, m.bar_persistent)
-        GLib.timeout_add(600, self.load_monitors)
-        self.main_window.add_toast(
-            Adw.Toast.new(t("Monitor configuration saved and applied."))
-        )
+        try:
+            before = hyprctl_config_errors()
+            backup_path = _save_monitors_conf(self._monitors)
+            _apply_to_hyprland(self._monitors)
+            _ok, errors = reload_hyprland_checked()
+            if errors and errors != before:
+                if backup_path is not None:
+                    backup.restore_backup(backup_path, _monitor_file())
+                reload_hyprland()
+                raise apply.ApplyError(errors)
+            for monitor in self._monitors:
+                if monitor.primary:
+                    _set_primary_monitor(monitor.name)
+                _set_bar_persistent(monitor.name, monitor.bar_persistent, restart=False)
+            restart_caelestia()
+            GLib.timeout_add(600, self.load_monitors)
+            self.main_window.add_toast(
+                Adw.Toast.new(t("Monitor configuration saved and applied."))
+            )
+        except apply.ApplyError as exc:
+            self.main_window.add_toast(
+                Adw.Toast.new(f"{t('Hyprland rejected the monitor configuration and it was rolled back')}: {exc}")
+            )
+        except backup.BackupError as exc:
+            self.main_window.add_toast(Adw.Toast.new(str(exc)))
+        except Exception as exc:  # pragma: no cover - defensive UI path
+            self.main_window.add_toast(
+                Adw.Toast.new(f"{t('Could not save monitor configuration')}: {exc}")
+            )
 
-    # Kompatibilität mit window.py (apply_btn dort entfernen wir später)
+    # Compatibility helper
     def get_all_widget_settings(self):
         return {}

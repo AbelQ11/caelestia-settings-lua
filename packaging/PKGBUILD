@@ -1,0 +1,46 @@
+# Maintainer: AbelQ11
+pkgname=caelestia-settings-lua
+pkgver=2.0.0
+pkgrel=1
+pkgdesc="GTK4/Libadwaita settings app for Caelestia on Hyprland Lua configuration"
+arch=('any')
+url="https://github.com/AbelQ11/caelestia-settings-lua"
+license=('MIT')
+depends=(
+  'python-gobject'
+  'libadwaita'
+  'python-cairo'
+  'python-psutil'
+  'pamixer'
+  'networkmanager'
+  'git'
+)
+optdepends=(
+  'ffmpeg: video thumbnails'
+  'bluez-utils: Bluetooth page'
+  'power-profiles-daemon: power profiles'
+  'rust: optional caelestia_core extension'
+  'swappy: screenshot tools'
+)
+source=("$pkgname::git+https://github.com/AbelQ11/caelestia-settings-lua.git#branch=dev")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$srcdir/$pkgname"
+  printf '2.0.0.r%s.g%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+package() {
+  local appdir="$pkgdir/usr/lib/caelestia-settings"
+
+  install -dm755 "$appdir"
+  install -Dm644 "$srcdir/$pkgname/main.py" "$appdir/main.py"
+  cp -r "$srcdir/$pkgname/src" "$appdir/src"
+  install -Dm644 "$srcdir/$pkgname/manifest.json" "$appdir/manifest.json"
+
+  install -Dm755 "$srcdir/$pkgname/packaging/caelestia-settings" "$pkgdir/usr/bin/caelestia-settings"
+  install -Dm644 "$srcdir/$pkgname/packaging/caelestia-settings.desktop" \
+    "$pkgdir/usr/share/applications/org.caelestia.settings.desktop"
+  install -Dm644 "$srcdir/$pkgname/assets/caelestia-settings.svg" \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/caelestia-settings.svg"
+}

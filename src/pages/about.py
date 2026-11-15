@@ -1,9 +1,26 @@
 import json
-import os 
+import os
+import shutil
 import subprocess
-from gi.repository import Gtk, Adw
+from pathlib import Path
+
+from gi.repository import Adw, Gtk
+
 from src.config import APP_DATA_DIR
 from src.lang import t
+
+
+def _terminal_command(script: str, pid: str) -> list[str]:
+    """Build a terminal command, trying the common Wayland terminals."""
+
+    for terminal in ("xdg-terminal-exec", "foot", "kitty", "alacritty", "wezterm"):
+        if shutil.which(terminal):
+            if terminal == "xdg-terminal-exec":
+                return [terminal, script, pid]
+            if terminal == "wezterm":
+                return [terminal, "start", "--", script, pid]
+            return [terminal, "-e", script, pid]
+    return [script, pid]
 
 class AboutPage(Gtk.Box):
     def __init__(self, main_window, **kwargs):
@@ -16,18 +33,31 @@ class AboutPage(Gtk.Box):
         self.set_margin_start(12)
         self.set_margin_end(12)
 
+        repo_root = Path(__file__).resolve().parents[2]
         manifest_path = APP_DATA_DIR / "manifest.json"
+        if not manifest_path.exists():
+            manifest_path = repo_root / "manifest.json"
         self.update_script = APP_DATA_DIR / "app_update.sh"
+        if not self.update_script.exists():
+            self.update_script = repo_root / "app_update.sh"
         self.uninstall_script = APP_DATA_DIR / "uninstall.sh"
+        if not self.uninstall_script.exists():
+            self.uninstall_script = repo_root / "uninstall.sh"
 
-        info = {"name": "Caelestia", "version": "?", "author": "?", "beschreibung": t("Manifest missing")}
+        info = {
+            "name": "Caelestia Settings",
+            "version": "?",
+            "author": "?",
+            "description": t("Manifest missing"),
+        }
 
         try:
             if manifest_path.exists():
-                with open(manifest_path, 'r') as f:
-                    data = json.load(f)
+                with manifest_path.open(encoding="utf-8") as handle:
+                    data = json.load(handle)
                     info.update(data)
-        except Exception as e: print(f"Err: {e}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"Could not read manifest: {exc}")
 
         # Exposed so MainWindow's background update check can compare against
         # it without re-reading/re-parsing manifest.json itself.
@@ -39,7 +69,9 @@ class AboutPage(Gtk.Box):
         
         info_group.add(Adw.ActionRow(title=t("Version"), subtitle=info["version"]))
         info_group.add(Adw.ActionRow(title=t("Author"), subtitle=info["author"]))
-        info_group.add(Adw.ActionRow(title=t("Description"), subtitle=info["beschreibung"]))
+        info_group.add(
+            Adw.ActionRow(title=t("Description"), subtitle=info.get("description", ""))
+        )
 
         # App Mgmt Group
         update_group = Adw.PreferencesGroup(title=t("App Management"))
@@ -66,30 +98,27 @@ class AboutPage(Gtk.Box):
             print(f"ERR: Script missing: {self.update_script}")
             return
 
-        # Holen der eigenen Prozess-ID (PID)
         my_pid = str(os.getpid())
-        print(f"Starte Update-Prozess (übergebe PID: {my_pid})...")
+        print(f"Starting the update process (PID: {my_pid})…")
 
         try:
-            # Wir übergeben die PID als Argument an das Skript
-            # Kitty Syntax: kitty [options] program [arguments...]
-            subprocess.Popen(["kitty", str(self.update_script), my_pid])
-        except Exception as e: print(f"Err: {e}")
+            subprocess.Popen(_terminal_command(str(self.update_script), my_pid))
+        except Exception as exc:  # noqa: BLE001
+            print(f"Could not start the updater: {exc}")
 
     def on_uninstall_clicked(self, button):
         if not self.uninstall_script.exists():
             print(f"ERR: Script missing: {self.uninstall_script}")
             return
 
-        # uninstall.sh still does its own [y/N] confirmation inside the
-        # kitty terminal (so a mis-click there can still be aborted), but the
-        # app itself quits immediately rather than waiting around for that —
-        # otherwise it sits there, still open, until the user answers.
+        # uninstall.sh still asks for confirmation in the terminal, so a
+        # mis-click can be aborted. The app itself quits immediately.
         my_pid = str(os.getpid())
-        print(f"Starte Uninstall-Prozess (übergebe PID: {my_pid})...")
+        print(f"Starting the uninstall process (PID: {my_pid})…")
 
         try:
-            subprocess.Popen(["kitty", str(self.uninstall_script), my_pid])
-        except Exception as e: print(f"Err: {e}")
+            subprocess.Popen(_terminal_command(str(self.uninstall_script), my_pid))
+        except Exception as exc:  # noqa: BLE001
+            print(f"Could not start the uninstaller: {exc}")
 
         self.win.get_application().quit()

@@ -1,304 +1,370 @@
-from src.lang import t
-import os
+"""Paths and shared configuration helpers.
+
+All user-facing files the app may modify are defined here.  Writes go through
+:mod:`src.backup`, which guarantees a timestamped backup and an atomic
+replacement for every change.
+"""
+
+from __future__ import annotations
+
 import json
-import re
+import os
+import subprocess
 from pathlib import Path
 
-try:
-    import caelestia_core
-except ImportError:
-    import sys
-    app_data = Path(os.path.expanduser("~/.local/share/caelestia-settings"))
-    if str(app_data) not in sys.path:
-        sys.path.insert(0, str(app_data))
-    try:
-        import caelestia_core
-    except ImportError:
-        caelestia_core = None
+from src import backup
+from src.lua import iter_calls
+from src.lang import t
 
-# Pfade
-CONFIG_DIR = Path(os.path.expanduser("~/.config/caelestia-settings"))
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+
+HOME = Path.home()
+CONFIG_DIR = HOME / ".config" / "caelestia-settings"
 MONITOR_CONFIG_FILE = CONFIG_DIR / "monitors.json"
 WINDOW_RULES_CONFIG_FILE = CONFIG_DIR / "window_rules.json"
-APP_DATA_DIR = Path(os.path.expanduser("~/.local/share/caelestia-settings"))
+APP_DATA_DIR = HOME / ".local" / "share" / "caelestia-settings"
 
-HYPR_DIR = Path(os.path.expanduser("~/.config/hypr"))
-CAELESTIA_DIR = Path(os.path.expanduser("~/.config/caelestia"))
+HYPR_DIR = Path(os.getenv("XDG_CONFIG_HOME", HOME / ".config")) / "hypr"
+CAELESTIA_DIR = Path(os.getenv("XDG_CONFIG_HOME", HOME / ".config")) / "caelestia"
 
-HYPR_INPUT_LUA = HYPR_DIR / "hyprland" / "input.lua"
+HYPR_HYPRLAND_DIR = HYPR_DIR / "hyprland"
+HYPR_INPUT_LUA = HYPR_HYPRLAND_DIR / "input.lua"
+HYPR_EXECS_LUA = HYPR_HYPRLAND_DIR / "execs.lua"
+HYPR_RULES_LUA = HYPR_HYPRLAND_DIR / "rules.lua"
+HYPR_KEYBINDS_DEFAULT_LUA = HYPR_HYPRLAND_DIR / "keybinds.lua"
+HYPR_DEFAULT_KEYBINDS_LUA = HYPR_KEYBINDS_DEFAULT_LUA
+HYPR_MONITORS_LUA = HYPR_DIR / "monitors.lua"
+HYPR_VARIABLES_LUA = HYPR_DIR / "variables.lua"
+
 HYPR_USER_LUA = CAELESTIA_DIR / "hypr-user.lua"
 HYPR_VARS_LUA = CAELESTIA_DIR / "hypr-vars.lua"
-HYPR_VARIABLES_LUA = HYPR_DIR / "variables.lua"
-HYPR_MONITORS_LUA = HYPR_DIR / "monitors.lua"
-HYPR_RULES_LUA = HYPR_DIR / "hyprland" / "rules.lua"
-HYPR_KEYBINDS_LUA = HYPR_DIR / "keybinds.lua"
-HYPR_EXECS_LUA = HYPR_DIR / "hyprland" / "execs.lua"
+SHELL_JSON = CAELESTIA_DIR / "shell.json"
+SHELL_TOKENS_JSON = CAELESTIA_DIR / "shell-tokens.json"
+MONITOR_SHELL_DIR = CAELESTIA_DIR / "monitors"
 
-# Backward compatibility aliases
+# The file a user can safely extend.  Everything written by this app goes here
+# (or into monitors.lua) so that caelestia updates never overwrite it.
+HYPR_USER_OVERRIDES = HYPR_USER_LUA
+HYPR_WORKSPACES_LUA = HYPR_MONITORS_LUA
+
+# ---------------------------------------------------------------------------
+# Backwards-compatible aliases
+# ---------------------------------------------------------------------------
+
 HYPR_INPUT_CONF = HYPR_INPUT_LUA
 HYPR_MONITORS_CONF = HYPR_MONITORS_LUA
 HYPR_RULES_CONF = HYPR_USER_LUA
-HYPR_KEYBINDS_CONF = HYPR_KEYBINDS_LUA
+HYPR_KEYBINDS_CONF = HYPR_KEYBINDS_DEFAULT_LUA
+HYPR_KEYBINDS_LUA = HYPR_KEYBINDS_DEFAULT_LUA
+HYPR_EXECS_CONF = HYPR_EXECS_LUA
 
-def get_config_dir():
+# Managed block identifiers
+BLOCK_INPUT = "input"
+BLOCK_KEYBINDS = "custom keybinds"
+BLOCK_RULES = "window rules"
+BLOCK_INPUT_DEVICES = "input devices"
+BLOCK_AUTOSTART = "autostart"
+BLOCK_HYPR_VARS = "hyprland styling"
+
+
+# ---------------------------------------------------------------------------
+# Small file helpers
+# ---------------------------------------------------------------------------
+
+
+def get_config_dir() -> Path:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     return CONFIG_DIR
 
-def load_monitor_config():
+
+def read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def write_text(path: Path, content: str) -> Path | None:
+    """Write a user file, creating a timestamped backup first."""
+
+    return backup.atomic_write_text(path, content)
+
+
+def reload_hyprland() -> bool:
+    try:
+        result = subprocess.run(
+            ["hyprctl", "reload"], capture_output=True, timeout=5, check=False
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def hyprctl_config_errors() -> str:
+    """Return Hyprland's current configuration errors, or an empty string."""
+
+    try:
+        result = subprocess.run(
+            ["hyprctl", "configerrors"], capture_output=True, text=True, timeout=5,
+            check=False,
+        )
+        if result.returncode != 0:
+            return ""
+        return result.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def reload_hyprland_checked() -> tuple[bool, str]:
+    """Reload Hyprland and return ``(reload_ok, config_errors)``."""
+
+    ok = reload_hyprland()
+    return ok, hyprctl_config_errors()
+
+
+def restart_caelestia() -> bool:
+    """Ask the Caelestia shell to reload ``shell.json`` changes."""
+
+    try:
+        result = subprocess.run(
+            ["caelestia", "shell", "-r"], capture_output=True, timeout=8, check=False
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+# ---------------------------------------------------------------------------
+# App-owned JSON (monitor layout cache + window-rule cache)
+# ---------------------------------------------------------------------------
+
+
+def load_monitor_config() -> dict:
     try:
         if MONITOR_CONFIG_FILE.exists():
-            with open(MONITOR_CONFIG_FILE, 'r') as f:
-                return json.load(f)
-    except Exception as e:
-        print(f"Fehler beim Laden von {MONITOR_CONFIG_FILE}: {e}")
+            return json.loads(MONITOR_CONFIG_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"Could not load {MONITOR_CONFIG_FILE}: {exc}")
     return {}
 
-def save_monitor_config(config_data):
-    try:
-        get_config_dir().mkdir(parents=True, exist_ok=True)
-        with open(MONITOR_CONFIG_FILE, 'w') as f:
-            json.dump(config_data, f, indent=2)
-        print(f"Monitor-Konfiguration gespeichert in {MONITOR_CONFIG_FILE}")
-    except Exception as e:
-        print(f"Fehler beim Speichern von {MONITOR_CONFIG_FILE}: {e}")
 
-def load_window_rules_config():
+def save_monitor_config(config_data: dict) -> None:
+    try:
+        write_text(MONITOR_CONFIG_FILE, json.dumps(config_data, indent=2) + "\n")
+    except Exception as exc:  # pragma: no cover - defensive UI path
+        print(f"Could not save {MONITOR_CONFIG_FILE}: {exc}")
+
+
+def load_window_rules_config() -> dict:
     try:
         if WINDOW_RULES_CONFIG_FILE.exists():
-            with open(WINDOW_RULES_CONFIG_FILE, 'r') as f:
-                return json.load(f)
-    except Exception as e:
-        print(f"Fehler beim Laden von {WINDOW_RULES_CONFIG_FILE}: {e}")
+            return json.loads(WINDOW_RULES_CONFIG_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"Could not load {WINDOW_RULES_CONFIG_FILE}: {exc}")
     return {}
 
-def save_window_rules_config(config_data):
+
+def save_window_rules_config(config_data: dict) -> None:
     try:
-        get_config_dir().mkdir(parents=True, exist_ok=True)
-        with open(WINDOW_RULES_CONFIG_FILE, 'w') as f:
-            json.dump(config_data, f, indent=2)
-        print(f"Window-Rules gespeichert in {WINDOW_RULES_CONFIG_FILE}")
-    except Exception as e:
-        print(f"Fehler beim Speichern von {WINDOW_RULES_CONFIG_FILE}: {e}")
+        write_text(WINDOW_RULES_CONFIG_FILE, json.dumps(config_data, indent=2) + "\n")
+    except Exception as exc:  # pragma: no cover - defensive UI path
+        print(f"Could not save {WINDOW_RULES_CONFIG_FILE}: {exc}")
 
 
-def _python_parse_monitors(text: str) -> tuple[list, list]:
-    monitors = []
-    workspaces = []
+# ---------------------------------------------------------------------------
+# Lua parsing
+# ---------------------------------------------------------------------------
 
-    if "hl.monitor" in text or "hl.workspace_rule" in text:
-        for m in re.finditer(r'hl\.monitor\s*\(\s*\{([^}]+)\}\s*\)', text, re.DOTALL):
-            fields = {}
-            for line in m.group(1).splitlines():
-                line = line.strip().strip(",")
-                if "=" in line:
-                    k, _, v = line.partition("=")
-                    fields[k.strip()] = v.strip().strip('"\'')
-            if "output" in fields:
-                monitors.append({
-                    "name": fields["output"],
-                    "resolution": fields.get("mode", "?"),
-                    "position": fields.get("position", "auto"),
-                    "scale": fields.get("scale", "1"),
-                })
-        for m in re.finditer(r'hl\.workspace_rule\s*\(\s*\{([^}]+)\}\s*\)', text, re.DOTALL):
-            fields = {}
-            for line in m.group(1).splitlines():
-                line = line.strip().strip(",")
-                if "=" in line:
-                    k, _, v = line.partition("=")
-                    fields[k.strip()] = v.strip().strip('"\'')
-            if "workspace" in fields:
-                try:
-                    num = int(fields["workspace"])
-                    workspaces.append({
-                        "number": num,
-                        "monitor": fields.get("monitor", ""),
-                        "default": fields.get("default", "false").lower() == "true",
-                    })
-                except ValueError:
-                    pass
-        return monitors, workspaces
-    for line in text.splitlines():
-        line = line.strip()
-        if line.startswith("monitor") and "=" in line and not line.startswith("monitor = desc:") and "{" not in line:
-            parts = [p.strip() for p in line.split("=", 1)[1].split(",")]
-            if parts and parts[0]:
-                monitors.append({
-                    "name": parts[0],
-                    "resolution": parts[1] if len(parts) > 1 else "?",
-                    "position": parts[2] if len(parts) > 2 else "auto",
-                    "scale": parts[3] if len(parts) > 3 else "1",
-                })
-        elif line.startswith("workspace") and "=" in line and "{" not in line:
-            parts = [p.strip() for p in line.split("=", 1)[1].split(",")]
-            if parts:
-                try:
-                    num = int(parts[0])
-                    mon = ""
-                    default = False
-                    for tok in parts[1:]:
-                        if tok.startswith("monitor:"):
-                            mon = tok.split("monitor:")[1]
-                        if "default:true" in tok:
-                            default = True
-                    workspaces.append({"number": num, "monitor": mon, "default": default})
-                except ValueError:
-                    pass
-    return monitors, workspaces
+
+def _as_string(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _monitor_candidates() -> list[Path]:
+    candidates = [HYPR_MONITORS_LUA, HYPR_HYPRLAND_DIR / "monitors.lua", HYPR_USER_LUA]
+    return [path for path in candidates if path.exists()]
 
 
 def parse_monitors_conf() -> dict:
+    """Read monitors and workspace rules from the Hyprland Lua config.
+
+    ``monitors.lua`` is used when present; ``hyprland/monitors.lua`` and
+    ``hypr-user.lua`` are fallbacks.  Unknown fields are returned too, so the
+    monitor page can preserve them when saving.
     """
-    Liest ~/.config/hypr/monitors.lua (oder Fallbacks) und gibt zurück:
-    {
-      "monitors":  [ {"name": "DP-1", "resolution": "2560x1440@179.95", ...}, ... ],
-      "workspaces": [ {"number": 1, "monitor": "DP-1", "default": True}, ... ],
-      "workspace_options": [ ("default", "Standard (keine Regel)"), ("1", "WS 1  –  DP-1  ★"), ... ]
-    }
-    """
-    monitors  = []
-    workspaces = []
 
-    target_file = HYPR_MONITORS_LUA
-    if not target_file.exists():
-        fallback_lua = HYPR_DIR / "hyprland" / "monitors.lua"
-        if fallback_lua.exists():
-            target_file = fallback_lua
-        elif HYPR_USER_LUA.exists():
-            target_file = HYPR_USER_LUA
+    monitors: list[dict] = []
+    workspaces: list[dict] = []
 
-    if not target_file.exists():
-        return {"monitors": [], "workspaces": [], "workspace_options": _fallback_ws_options()}
+    for target in _monitor_candidates():
+        try:
+            text = read_text(target)
+        except OSError:
+            continue
+        if not text:
+            continue
 
-    try:
-        text = target_file.read_text()
-        if caelestia_core is not None:
-            rust_monitors, rust_workspaces = caelestia_core.parse_monitors_conf(text)
-            monitors = [
-                {
-                    "name":       m.name,
-                    "resolution": m.resolution,
-                    "position":   m.position,
-                    "scale":      m.scale,
-                }
-                for m in rust_monitors
-            ]
-            workspaces = [
-                {"number": w.number, "monitor": w.monitor, "default": w.default}
-                for w in rust_workspaces
-            ]
-        else:
-            monitors, workspaces = _python_parse_monitors(text)
-    except Exception as e:
-        print(f"Fehler beim Parsen von monitors.lua: {e}")
+        found_monitor = False
+        for call in iter_calls(text, {"hl.monitor"}):
+            table = call.table if isinstance(call.table, dict) else None
+            if not table or "output" not in table:
+                continue
+            found_monitor = True
+            entry = {
+                "name": _as_string(table.get("output")),
+                "resolution": _as_string(table.get("mode", "?")),
+                "position": _as_string(table.get("position", "auto")),
+                "scale": _as_string(table.get("scale", "1")),
+                "disabled": bool(table.get("disabled", False)),
+                "bitdepth": _as_string(table.get("bitdepth", "")),
+                "transform": _as_string(table.get("transform", "")),
+                "cm": _as_string(table.get("cm", "")),
+                "vrr": table.get("vrr"),
+                "mirror": _as_string(table.get("mirror", "")),
+                "_fields": table,
+            }
+            monitors.append(entry)
 
-    workspaces.sort(key=lambda w: w["number"])
+        for call in iter_calls(text, {"hl.workspace_rule"}):
+            table = call.table if isinstance(call.table, dict) else None
+            if not table or "workspace" not in table:
+                continue
+            raw = _as_string(table.get("workspace")).strip()
+            entry = {
+                "workspace": raw,
+                "number": int(raw) if raw.isdigit() else None,
+                "monitor": _as_string(table.get("monitor", "")),
+                "default": bool(table.get("default", False)),
+                "persistent": bool(table.get("persistent", False)),
+                "gaps_in": table.get("gaps_in"),
+                "gaps_out": table.get("gaps_out"),
+                "layout": _as_string(table.get("layout", "")),
+                "no_rounding": bool(table.get("no_rounding", False)),
+                "no_border": bool(table.get("no_border", False)),
+                "no_shadow": bool(table.get("no_shadow", False)),
+                "decorate": bool(table.get("decorate", True)),
+                "_fields": table,
+            }
+            workspaces.append(entry)
 
-    ws_options = [("default", t("Standard (no rule)"))]
+        if found_monitor or workspaces:
+            break
+
+    workspaces.sort(key=lambda item: (item["number"] is None, item["number"] or 0, item["workspace"]))
+
+    ws_options: list[tuple[str, str]] = [("default", t("Default (no rule)"))]
     for ws in workspaces:
-        label = f"WS {ws['number']}  –  {ws['monitor']}" if ws["monitor"] else f"Workspace {ws['number']}"
+        label = f"Workspace {ws['workspace']}"
+        if ws["monitor"]:
+            label += f"  –  {ws['monitor']}"
         if ws["default"]:
             label += "  ★"
-        ws_options.append((str(ws["number"]), label))
+        ws_options.append((ws["workspace"], label))
 
-    for sp in ["sysmon", "music", "communication", "todo", "scratch"]:
-        ws_options.append((f"special:{sp}", f"Special: {sp}"))
+    for special in ("sysmon", "music", "communication", "todo", "scratch"):
+        ws_options.append((f"special:{special}", f"Special: {special}"))
 
     return {"monitors": monitors, "workspaces": workspaces, "workspace_options": ws_options}
+
 
 parse_monitors_lua = parse_monitors_conf
 
 
-def _fallback_ws_options() -> list:
-    opts = [("default", t("Standard (no rule)"))]
-    for i in range(1, 21):
-        opts.append((str(i), f"Workspace {i}"))
-    for sp in ["sysmon", "music", "communication", "todo", "scratch"]:
-        opts.append((f"special:{sp}", f"Special: {sp}"))
-    return opts
+def _managed_ranges(text: str) -> list[tuple[int, int]]:
+    import re
+
+    ranges = []
+    pattern = re.compile(
+        r"(?ms)^[ \t]*-- BEGIN Caelestia Settings: window rules.*?^[ \t]*-- END Caelestia Settings: window rules[ \t]*$"
+    )
+    for match in pattern.finditer(text):
+        ranges.append((match.start(), match.end()))
+    # Legacy flat markers: everything after the marker is managed.
+    for legacy in (
+        "-- Auto-generated by Caelestia Settings – Fenster-Regeln",
+        "-- Auto-generated by Caelestia Settings – Window Rules",
+        "# Auto-generated by Caelestia Settings – Fenster-Regeln",
+    ):
+        idx = text.find(legacy)
+        if idx >= 0:
+            ranges.append((idx, len(text)))
+    return ranges
 
 
-def _python_parse_rules(text: str) -> list[dict]:
-    result = []
-    in_managed = False
-    for line in text.splitlines():
-        s = line.strip()
-        if "Auto-generated by Caelestia Settings – Fenster-Regeln" in s:
-            in_managed = True
+def _rule_summary(table: dict) -> str:
+    parts = []
+    for key, value in table.items():
+        if key in ("match", "name", "enabled", "__array__"):
             continue
-        if s.startswith("--") or s.startswith("#") or not s:
+        if isinstance(value, bool):
+            parts.append("float true" if key == "float" and value else f"{key} true")
+        elif isinstance(value, dict):
+            inner = " ".join(_as_string(v) for v in value.values())
+            parts.append(f"{key} {inner}")
+        else:
+            parts.append(f"{key} {_as_string(value)}")
+    return ", ".join(parts)
+
+
+def parse_rules_conf() -> list[dict]:
+    """Read window rules from ``rules.lua`` and ``hypr-user.lua``."""
+
+    result: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    for target in (HYPR_RULES_LUA, HYPR_USER_LUA):
+        if not target.exists():
             continue
-        if "hl.window_rule" in s:
-            match_m = re.search(r'match\s*=\s*\{\s*(class|title|initial_title|initial_class)\s*=\s*["\']([^"\']+)["\']', s)
-            if match_m:
-                m_type = match_m.group(1)
-                m_val = match_m.group(2)
-                ws_m = re.search(r'workspace\s*=\s*["\']?([^"\',}]+)["\']?', s)
-                if ws_m:
-                    result.append({
-                        "rule": f"workspace {ws_m.group(1).strip()}",
-                        "match_type": m_type,
-                        "match_val": m_val,
-                        "raw": s,
-                        "managed": in_managed,
-                    })
-                if "float = true" in s or "float = 1" in s:
-                    result.append({
-                        "rule": "float true",
-                        "match_type": m_type,
-                        "match_val": m_val,
-                        "raw": s,
-                        "managed": in_managed,
-                    })
-        elif s.startswith("windowrule") and "=" in s:
-            rest = s.split("=", 1)[1].strip()
-            rule_part, match_type, match_val = rest, "class", ""
-            if ", match:" in rest:
-                idx = rest.rfind(", match:")
-                rule_part = rest[:idx].strip()
-                match_part = rest[idx + len(", match:"):].strip().split(None, 1)
-                match_type = match_part[0] if match_part else "class"
-                match_val = match_part[1] if len(match_part) > 1 else ""
-            result.append({
-                "rule": rule_part,
-                "match_type": match_type,
-                "match_val": match_val,
-                "raw": s,
-                "managed": in_managed,
-            })
+        text = read_text(target)
+        if not text:
+            continue
+        ranges = _managed_ranges(text)
+
+        for call in iter_calls(text, {"hl.window_rule"}):
+            table = call.table if isinstance(call.table, dict) else None
+            if not table:
+                continue
+            match = table.get("match")
+            match_type = "class"
+            match_val = ""
+            if isinstance(match, dict):
+                for field in ("class", "initial_class", "title", "initial_title"):
+                    if field in match:
+                        match_type = field
+                        match_val = _as_string(match[field])
+                        break
+            elif isinstance(match, list):
+                match_val = "|".join(_as_string(v) for v in match)
+            if not match_val:
+                # Tag-only rules (rules.lua internals) are not app-targeted.
+                continue
+
+            managed = any(start <= call.start < end for start, end in ranges)
+            rule = _rule_summary(table)
+            signature = (match_type, match_val, rule)
+            if signature in seen:
+                continue
+            seen.add(signature)
+
+            result.append(
+                {
+                    "rule": rule,
+                    "match_type": match_type,
+                    "match_val": match_val,
+                    "raw": text[call.start:call.end].strip(),
+                    "managed": managed,
+                    "source": str(target),
+                    "fields": table,
+                }
+            )
+
     return result
 
-
-def parse_rules_conf() -> list:
-    """
-    Liest rules.lua und hypr-user.lua und gibt alle windowrule-Einträge strukturiert zurück.
-    { "rule": "workspace special:music", "match_type": "class",
-      "match_val": "feishin|Spotify", "raw": "...", "managed": False }
-    """
-    result = []
-    candidates = []
-    if HYPR_RULES_LUA.exists():
-        candidates.append(HYPR_RULES_LUA)
-    if HYPR_USER_LUA.exists():
-        candidates.append(HYPR_USER_LUA)
-
-    for target in candidates:
-        try:
-            content = target.read_text()
-            if caelestia_core is not None:
-                for r in caelestia_core.parse_rules_conf(content):
-                    result.append({
-                        "rule":       r.rule,
-                        "match_type": r.match_type,
-                        "match_val":  r.match_val,
-                        "raw":        r.raw,
-                        "managed":    r.managed,
-                    })
-            else:
-                result.extend(_python_parse_rules(content))
-        except Exception as e:
-            print(f"Fehler beim Parsen von {target}: {e}")
-
-    return result
 
 parse_rules_lua = parse_rules_conf

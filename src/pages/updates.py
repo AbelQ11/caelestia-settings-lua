@@ -5,13 +5,12 @@ import threading
 from gi.repository import Gtk, Adw, GLib
 from src.lang import t
 
-# Schritte die das Update-Skript durchläuft — wird als Fortschritt angezeigt
+# Steps the update script reports; shown as progress.
 UPDATE_STEPS = [
-    ("yay -Syu",         "System-Pakete aktualisieren…"),
-    ("hyprlock",         "hyprlock aktualisieren…"),
-    ("swww",             "swww aktualisieren…"),
-    ("pipewire",         "Audio-Dienste neu starten…"),
-    ("reboot",           "Neustart wird vorbereitet…"),
+    ("caelestia update", "Updating system packages…"),
+    ("yay -Syu",         "Updating system packages…"),
+    ("pipewire",         "Restarting audio services…"),
+    ("reboot",           "Preparing reboot…"),
 ]
 
 UPDATE_SCRIPT = """#!/usr/bin/env bash
@@ -35,14 +34,18 @@ trap 'rm -f "$_ASKPASS"; unset _SUDO_PASS SUDO_ASKPASS' EXIT
 
 sudo -A -v
 
-echo "::step:: System-Pakete aktualisieren…"
-yay -Syu --needed hyprlock swww --noconfirm
-echo "::step:: Audio-Dienste neu starten…"
+echo "::step:: Updating system packages…"
+if command -v caelestia >/dev/null 2>&1; then
+    caelestia update --noconfirm
+else
+    yay -Syu --noconfirm
+fi
+echo "::step:: Restarting audio services…"
 systemctl --user restart pipewire.service pipewire-pulse.service wireplumber.service
 
 echo "::done::"
 if [[ "$1" == "-r" ]]; then
-    echo "::step:: Neustart wird vorbereitet…"
+    echo "::step:: Preparing reboot…"
     sleep 5
     sudo -A reboot
 fi
@@ -58,7 +61,7 @@ class UpdatePage(Gtk.Box):
         self._process = None
         self._running = False
 
-        # ── Einstellungs-Bereich (oben) ──────────────────────────────────
+        # ── Settings area (top) ─────────────────────────────────────────
         settings_group = Adw.PreferencesGroup(title=t("System Update"))
         settings_group.set_margin_top(12)
         settings_group.set_margin_start(12)
@@ -71,7 +74,7 @@ class UpdatePage(Gtk.Box):
         )
         settings_group.add(self.reboot_row)
 
-        # Start-Button
+        # Start button
         btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         btn_box.set_margin_top(12)
         btn_box.set_margin_start(12)
@@ -85,7 +88,7 @@ class UpdatePage(Gtk.Box):
         btn_box.append(self.start_btn)
         self.append(btn_box)
 
-        # ── Fortschritts-Bereich (mitte) ─────────────────────────────────
+        # ── Progress area (middle) ──────────────────────────────────────
         self.progress_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.progress_box.set_margin_top(16)
         self.progress_box.set_margin_start(12)
@@ -93,18 +96,18 @@ class UpdatePage(Gtk.Box):
         self.progress_box.set_visible(False)
         self.append(self.progress_box)
 
-        # Aktueller Schritt-Label
+        # Current step label
         self.step_label = Gtk.Label(label="")
         self.step_label.add_css_class("heading")
         self.step_label.set_halign(Gtk.Align.START)
         self.progress_box.append(self.step_label)
 
-        # Fortschrittsbalken
+        # Progress bar
         self.progress_bar = Gtk.ProgressBar()
         self.progress_bar.set_pulse_step(0.1)
         self.progress_box.append(self.progress_bar)
 
-        # ── Log-Ausgabe (unten, scrollbar) ───────────────────────────────
+        # ── Log output (bottom, scrollable) ─────────────────────────────
         log_frame = Gtk.Frame()
         log_frame.set_margin_top(12)
         log_frame.set_margin_start(12)
@@ -133,7 +136,7 @@ class UpdatePage(Gtk.Box):
         log_scroll.set_child(self.log_view)
         self._log_scroll = log_scroll
 
-        # ── Status-Banner (Erfolg / Fehler) ──────────────────────────────
+        # ── Status banner (success / error) ─────────────────────────────
         self.result_banner = Adw.Banner()
         self.result_banner.set_revealed(False)
         self.append(self.result_banner)
@@ -180,7 +183,7 @@ class UpdatePage(Gtk.Box):
         dialog.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
         dialog.set_default_response("ok")
 
-        # Enter in Passwortfeld → Dialog bestätigen und schließen
+        # Enter in the password field → confirm and close the dialog
         def on_entry_activate(_entry):
             dialog.response("ok")
             dialog.close()
@@ -189,7 +192,7 @@ class UpdatePage(Gtk.Box):
         def on_response(dlg, response):
             if response == "ok":
                 password = pwd_entry.get_text()
-                pwd_entry.set_text("")   # Passwort sofort aus Widget löschen
+                pwd_entry.set_text("")   # Clear the password from the widget immediately
                 if password:
                     self._start_update(password)
                 else:
@@ -241,7 +244,7 @@ class UpdatePage(Gtk.Box):
             self._process.stdin.write(password + "\n")
             self._process.stdin.flush()
             self._process.stdin.close()
-            password = ""   # Passwort sofort aus Speicher löschen
+            password = ""   # Clear the password from memory immediately
 
             step_count = 0
             total_steps = UPDATE_SCRIPT.count("::step::")
@@ -254,7 +257,7 @@ class UpdatePage(Gtk.Box):
                     fraction = min(step_count / max(total_steps, 1), 0.95)
                     GLib.idle_add(self._update_step, msg, fraction)
                 elif line == "::done::":
-                    GLib.idle_add(self._update_step, "Fertig!", 1.0)
+                    GLib.idle_add(self._update_step, t("Done!"), 1.0)
                 else:
                     GLib.idle_add(self._append_log, line)
 
@@ -277,7 +280,7 @@ class UpdatePage(Gtk.Box):
                 ], capture_output=True)
 
         except Exception as e:
-            GLib.idle_add(self._on_finished, False, f"Fehler: {e}")
+            GLib.idle_add(self._on_finished, False, f"Error: {e}")
         finally:
             if script_path:
                 try:

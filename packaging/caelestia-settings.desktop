@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Caelestia Settings
+Comment=Manage Caelestia, Hyprland, monitors, audio and shell settings
+Exec=caelestia-settings
+Icon=caelestia-settings
+Terminal=false
+Categories=Settings;System;
+Keywords=caelestia;hyprland;settings;

@@ -7,10 +7,9 @@
 #     not safe to remove automatically.
 #   - The `~/.local/bin` PATH additions in fish/profile — a general-purpose
 #     directory other tools may also rely on.
-#   - The rules.conf/monitors.conf `source` lines and the Polkit autostart
-#     line in hyprland.conf — these are generic Hyprland integration points
-#     (rules.conf/monitors.conf hold the user's actual monitor layout and
-#     window rules, not just this app's), not exclusive to this app.
+#   - The `monitors.lua` require line and the Polkit autostart line — these
+#     are generic Hyprland integration points (monitors.lua holds the user's
+#     actual monitor layout, not just this app's), not exclusive to this app.
 #
 set -e
 
@@ -27,12 +26,46 @@ USER_CONFIG_DIR="$HOME/.config/caelestia-settings"
 
 APP_TARGET_BIN="$BIN_DIR/caelestia-settings"
 APP_TARGET_DESKTOP="$APP_LAUNCHER_DIR/org.caelestia.settings.desktop"
+ICON_PATH="$HOME/.local/share/icons/hicolor/scalable/apps/caelestia-settings.svg"
 
 HYPR_CONFIG_DIR="$HOME/.config/hypr"
 HYPR_LUA_FILE="$HYPR_CONFIG_DIR/hyprland.lua"
 CAELESTIA_CONFIG_DIR="$HOME/.config/caelestia"
 HYPR_USER_LUA="$CAELESTIA_CONFIG_DIR/hypr-user.lua"
+HYPR_MONITORS_LUA="$HYPR_CONFIG_DIR/monitors.lua"
 KEYBINDS_LUA_FILE="$HYPR_CONFIG_DIR/keybinds.lua"
+
+# Backup every file before modifying it (same store as the app).
+backup_file() {
+    local file="$1"
+    [ -f "$file" ] || return 0
+    local ts
+    ts=$(date +%Y%m%d_%H%M%S)
+    cp -p "$file" "$file.bak.$ts" 2>/dev/null || true
+    local rel="${file#"$HOME"/}"
+    local dest="$HOME/.config/caelestia-settings/backups/$(dirname "$rel")"
+    mkdir -p "$dest"
+    cp -p "$file" "$dest/$(basename "$file").$ts.bak" 2>/dev/null || true
+}
+
+# remove_managed_block FILE BLOCK_ID
+# Removes one of the marker-delimited blocks written by the app.
+remove_managed_block() {
+    local file="$1"
+    local id="$2"
+    [ -f "$file" ] || return 1
+    local begin="-- BEGIN Caelestia Settings: $id"
+    local end="-- END Caelestia Settings: $id"
+    grep -q -F -- "$begin" "$file" 2>/dev/null || return 1
+
+    backup_file "$file"
+    awk -v begin="$begin" -v end="$end" '
+        index($0, begin) { skip = 1; next }
+        index($0, end)   { skip = 0; next }
+        !skip            { print }
+    ' "$file" > "$file.caelestia-tmp" && mv "$file.caelestia-tmp" "$file"
+    return 0
+}
 
 # --- 2. Confirm ---
 # Optional first positional argument: PID of the running app (passed by the
@@ -93,6 +126,12 @@ if [ -f "$APP_TARGET_DESKTOP" ]; then
 else
     echo "--- Not found, skipping."
 fi
+
+if [ -f "$ICON_PATH" ]; then
+    rm -f "$ICON_PATH"
+    command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" >/dev/null 2>&1 || true
+    echo "--- Removed app icon"
+fi
 echo
 
 # --- 5. Remove the installed application (incl. caelestia_core, app_update.sh) ---
@@ -105,17 +144,30 @@ else
 fi
 echo
 
-# --- 6. Remove app-specific Hyprland window rules ---
-echo ">>> STEP 4: Removing Hyprland window rules..."
+# --- 6. Remove app-specific Hyprland rules and managed blocks ---
+echo ">>> STEP 4: Removing Hyprland integration and managed blocks..."
 RULES_TAG="-- Caelestia Settings Rules"
-if [ -f "$HYPR_USER_LUA" ] && grep -q -F "org.caelestia.settings" "$HYPR_USER_LUA"; then
-    sed -i \
-        -e "/^${RULES_TAG//\//\\/}\$/d" \
-        -e '/org\.caelestia\.settings/d' \
-        "$HYPR_USER_LUA"
-    echo "--- Removed window rules from $HYPR_USER_LUA"
+if [ -f "$HYPR_USER_LUA" ]; then
+    if grep -q -F "org.caelestia.settings" "$HYPR_USER_LUA"; then
+        backup_file "$HYPR_USER_LUA"
+        sed -i --follow-symlinks \
+            -e "/^${RULES_TAG//\//\\/}\$/d" \
+            -e '/org\.caelestia\.settings/d' \
+            "$HYPR_USER_LUA"
+        echo "--- Removed the app window rule from $HYPR_USER_LUA"
+    fi
+
+    for block in "input" "custom keybinds" "window rules" "input devices" "autostart"; do
+        if remove_managed_block "$HYPR_USER_LUA" "$block"; then
+            echo "--- Removed managed block: $block"
+        fi
+    done
 else
-    echo "--- Not found, skipping."
+    echo "--- $HYPR_USER_LUA not found, skipping."
+fi
+
+if remove_managed_block "$HYPR_MONITORS_LUA" "workspace rules"; then
+    echo "--- Removed managed workspace rules from $HYPR_MONITORS_LUA"
 fi
 echo
 
@@ -124,7 +176,8 @@ echo ">>> STEP 5: Removing Super+I keybind..."
 BIND_REMOVED=false
 for f in "$HYPR_USER_LUA" "$KEYBINDS_LUA_FILE" "$HYPR_LUA_FILE"; do
     if [ -f "$f" ] && grep -q -F "caelestia-settings" "$f"; then
-        sed -i '/caelestia-settings/d' "$f"
+        backup_file "$f"
+        sed -i --follow-symlinks '/caelestia-settings/d' "$f"
         echo "--- Removed keybind from $f"
         BIND_REMOVED=true
     fi
@@ -162,10 +215,15 @@ echo "###      UNINSTALL COMPLETE           ###"
 echo "#########################################"
 echo
 echo "Not touched (shared with the rest of the system, remove manually if you want):"
-echo "  - Installed packages (python-gobject, libadwaita, pamixer, rust, ...)"
+echo "  - Installed packages (python-gobject, libadwaita, pamixer, optional rust, ...)"
 echo "  - ~/.local/bin PATH additions in ~/.config/fish/config.fish and ~/.profile"
-echo "  - The rules.conf/monitors.conf 'source' lines and Polkit autostart line in"
-echo "    $HYPR_CONFIG_FILE"
+echo "  - The monitors.lua require line and Polkit autostart line in"
+echo "    $HYPR_LUA_FILE"
+echo "  - Caelestia shell settings in ~/.config/caelestia/shell.json"
+echo "  - Per-monitor shell.json overrides under ~/.config/caelestia/monitors/"
+echo "  - hypr-vars.lua overrides (keybinds, styling, gestures, cursor)"
+echo "  - monitor definitions in $HYPR_MONITORS_LUA"
+echo "  - the primary-monitor xrandr line in hyprland/execs.lua"
 echo
 echo "Run 'hyprctl reload' or restart Hyprland to apply the config changes."
 echo
