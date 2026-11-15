@@ -128,6 +128,8 @@ Caelestia's styling variables, edited as overrides in `hypr-vars.lua`:
 ### Monitor
 - Drag-and-drop monitor arrangement
 - Resolution, refresh rate, rotation, scale and bit depth (8/10-bit)
+- Scale choices are limited to values Hyprland can apply exactly; when Kanshi
+  is running, its profiles are updated and reloaded too
 - Colour management preset, VRR, ICC profile and mirror output
 - SDR brightness/saturation and HDR min/max luminance controls
 - Primary monitor (`xrandr --primary` in `execs.lua`)
@@ -409,6 +411,7 @@ caelestia-settings-lua/
 | `~/.config/caelestia/monitors/<name>/shell.json` | per-monitor overrides for every supported option |
 | `~/.config/hypr/monitors.lua` | `hl.monitor` definitions and `hl.workspace_rule` blocks |
 | `~/.config/hypr/hyprland/execs.lua` | primary-monitor `xrandr` line |
+| `~/.config/kanshi/config` | monitor scale/mode/position/enable in Kanshi profiles |
 | `~/.config/caelestia-settings/*.json` | app caches |
 | `~/.config/caelestia-settings/backups/` | automatic timestamped backups |
 
@@ -495,6 +498,7 @@ containers** (`archlinux:latest`), matching the supported distribution:
 - General Network page: devices, connections, VPN import and IPv4 editing
 - Monitor HDR/ICC/mirror controls, per-app audio, file associations and
   configurable backup retention
+- Kanshi-aware monitor scaling (Kanshi was overriding the app's scale)
 - Bluetooth pairing agent, xvfb/shellcheck CI and tagged releases with checksums
 - Keybinds now edit `variables.lua` overrides, `config.binds` and managed `hl.bind` entries,
   with a key recorder and a live `hyprctl binds` view
@@ -529,6 +533,7 @@ containers** (`archlinux:latest`), matching the supported distribution:
 - [x] General Network page (Ethernet/VPN/connections/IPv4)
 - [x] Monitor HDR/ICC/mirror, per-app audio, file associations, backup retention
 - [x] App icon and PKGBUILD packaging
+- [x] Kanshi-aware monitor scaling and valid scale choices
 - [x] Bluetooth pairing agent (PIN/passkey)
 - [x] CI with xvfb UI tests and shellcheck
 - [x] Release-tag updater and GitHub release workflow with checksums

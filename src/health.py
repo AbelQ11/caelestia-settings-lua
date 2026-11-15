@@ -380,6 +380,31 @@ def wallpaper_check() -> CheckResult:
     )
 
 
+def kanshi_check() -> CheckResult:
+    from src import kanshi
+
+    if not kanshi.available():
+        return CheckResult(
+            "kanshi",
+            "Kanshi",
+            "ok",
+            "Kanshi is not configured.",
+        )
+    running = kanshi.is_running()
+    return CheckResult(
+        "kanshi",
+        "Kanshi",
+        "info",
+        (
+            "Kanshi is running; the Monitor page syncs scale/position/mode changes "
+            "into its profiles and reloads it."
+            if running
+            else "Kanshi config detected; monitor changes are written to its profiles."
+        ),
+        {"running": running},
+    )
+
+
 def backup_check() -> CheckResult:
     entries = backup.list_backups()
     if not entries:
@@ -407,6 +432,7 @@ def run_all() -> list[CheckResult]:
         hyprland_errors_check(),
         wallpaper_check(),
         unknown_keys_check(),
+        kanshi_check(),
         backup_check(),
     ]
     results.extend(config_validity_checks())

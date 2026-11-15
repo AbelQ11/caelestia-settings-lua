@@ -4,7 +4,7 @@ from pathlib import Path
 
 import cairo
 
-from src import apply, backup, lua, shell_config
+from src import apply, backup, kanshi, lua, shell_config
 from src.config import (
     HYPR_EXECS_LUA,
     HYPR_HYPRLAND_DIR,
@@ -53,6 +53,21 @@ MONITOR_COLORS = [
 ]
 
 CANVAS_H = 220   # Preview canvas height in pixels
+
+# Scales that commonly keep an integer logical resolution.  Hyprland rounds
+# unsupported fractional scales, so the UI only offers valid values.
+COMMON_SCALES = [0.5, 0.75, 1.0, 1.1, 1.2, 1.25, 1.333, 1.4, 1.5, 1.6,
+                 1.666, 1.75, 1.8, 2.0, 2.25, 2.5, 3.0, 4.0]
+
+
+def valid_scales(width: int, height: int) -> list[float]:
+    result = []
+    for scale in COMMON_SCALES:
+        logical_w = width / scale
+        logical_h = height / scale
+        if abs(logical_w - round(logical_w)) < 1e-6 and abs(logical_h - round(logical_h)) < 1e-6:
+            result.append(round(scale, 3))
+    return sorted(set(result))
 
 
 # ── Hilfsfunktionen ───────────────────────────────────────────────────────────
@@ -743,11 +758,10 @@ class MonitorSettingsPanel(Gtk.Box):
 
         # ── Scaling ──
         scale_row = Adw.ActionRow(title=t("Scale"))
-        self._scale_spin = Gtk.SpinButton.new_with_range(0.25, 4.0, 0.25)
-        self._scale_spin.set_digits(2)
-        self._scale_spin.set_valign(Gtk.Align.CENTER)
-        self._scale_spin.connect("value-changed", self._on_scale_changed)
-        scale_row.add_suffix(self._scale_spin)
+        self._scale_combo = Gtk.ComboBoxText()
+        self._scale_combo.set_valign(Gtk.Align.CENTER)
+        self._scale_combo.connect("changed", self._on_scale_changed)
+        scale_row.add_suffix(self._scale_combo)
         self._group.add(scale_row)
 
         # ── Enabled ──
@@ -815,7 +829,7 @@ class MonitorSettingsPanel(Gtk.Box):
         self._min_luminance.set_value(float(m.min_luminance or 0))
         self._max_luminance.set_value(float(m.max_luminance or 0))
         self._max_avg_luminance.set_value(float(m.max_avg_luminance or 0))
-        self._scale_spin.set_value(m.scale)
+        self._reload_scales(m)
         self._enabled_row.set_active(not m.disabled)
         self._primary_row.set_active(m.primary)
         self._bar_row.set_active(m.bar_persistent)
@@ -840,6 +854,7 @@ class MonitorSettingsPanel(Gtk.Box):
         self._monitor.height = int(h)
         self._loading = True
         self._reload_hz(res)
+        self._reload_scales(self._monitor)
         # Default to the highest refresh rate
         hz_list = self._monitor.hz_for_resolution(res)
         if hz_list:
@@ -889,9 +904,26 @@ class MonitorSettingsPanel(Gtk.Box):
         self._monitor.max_luminance = int(self._max_luminance.get_value())
         self._monitor.max_avg_luminance = int(self._max_avg_luminance.get_value())
 
-    def _on_scale_changed(self, spin):
-        if self._loading or not self._monitor: return
-        self._monitor.scale = spin.get_value()
+    def _reload_scales(self, m: MonitorModel):
+        self._scale_combo.remove_all()
+        width, height = m.width, m.height
+        for scale in valid_scales(width, height):
+            logical_w = int(round(width / scale))
+            logical_h = int(round(height / scale))
+            self._scale_combo.append(
+                f"{scale:.3f}", f"{scale:g}   ({logical_w}×{logical_h})"
+            )
+        current = f"{m.scale:.3f}"
+        if not self._scale_combo.set_active_id(current):
+            self._scale_combo.append(current, f"{m.scale:g}   ({t('current')})")
+            self._scale_combo.set_active_id(current)
+
+    def _on_scale_changed(self, combo):
+        if self._loading or not self._monitor:
+            return
+        value = combo.get_active_id()
+        if value:
+            self._monitor.scale = float(value)
 
     def _on_enabled_changed(self, row, _):
         if self._loading or not self._monitor: return
@@ -931,7 +963,10 @@ class MonitorPage(Gtk.Box):
         self.append(canvas_frame)
 
         # Canvas hint
-        hint = Gtk.Label(label=t("Click to select  •  Drag to move"))
+        hint_text = t("Click to select  •  Drag to move")
+        if kanshi.is_running():
+            hint_text += "  ·  " + t("Kanshi is running; changes are synced to its profiles.")
+        hint = Gtk.Label(label=hint_text)
         hint.add_css_class("caption")
         hint.set_margin_top(4)
         hint.set_margin_bottom(8)
@@ -994,6 +1029,10 @@ class MonitorPage(Gtk.Box):
         try:
             before = hyprctl_config_errors()
             backup_path = _save_monitors_conf(self._monitors)
+            try:
+                kanshi.update_config(self._monitors)
+            except Exception as exc:  # noqa: BLE001 - Kanshi is optional
+                print(f"Could not update Kanshi config: {exc}")
             _apply_to_hyprland(self._monitors)
             _ok, errors = reload_hyprland_checked()
             if errors and errors != before:
@@ -1001,6 +1040,7 @@ class MonitorPage(Gtk.Box):
                     backup.restore_backup(backup_path, _monitor_file())
                 reload_hyprland()
                 raise apply.ApplyError(errors)
+            kanshi.reload()
             for monitor in self._monitors:
                 if monitor.primary:
                     _set_primary_monitor(monitor.name)

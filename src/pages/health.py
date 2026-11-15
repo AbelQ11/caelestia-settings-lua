@@ -99,7 +99,7 @@ class HealthPage(Gtk.Box):
         app_checks = [r for r in results if r.key in ("app_version", "shell_version")]
         config_checks = [
             r for r in results
-            if r.key in ("hyprland_errors", "unknown_keys", "backups")
+            if r.key in ("hyprland_errors", "unknown_keys", "kanshi", "backups")
             or r.key.startswith("json")
         ]
         wallpaper_checks = [r for r in results if r.key == "wallpaper"]

@@ -31,14 +31,14 @@ Updated:
 - `tests/test_lua_config.py` — managed input block instead of direct `input.lua`
   writes, comment-aware rule parsing, monitor extra-field preservation.
 
-Result: **103 tests passing** (shell settings in recap 09, health/search/undo in
+Result: **108 tests passing** (shell settings in recap 09, health/search/undo in
 recap 10, audio/Bluetooth in recap 11, visual preview in recap 12, input/theming/UI
 tests in recap 13, launcher actions/interactions in recap 14, validated
 writes/autostart/uninstall in recap 15, default apps/power/backups in recap 16,
 animated wallpaper folder in recap 17, recording/action menu/AppImage in recap 18,
 sidebar/icon/window rules in recap 19, network page in recap 20,
 monitor/audio/associations/retention in recap 21, packaging in recap 22,
-Bluetooth/CI/release in recap 23).
+Bluetooth/CI/release in recap 23, Kanshi/monitor scale in recap 24).
 
 ## CI
 

@@ -28,6 +28,7 @@ One file per modification, newest last.
 | [21-monitor-audio-associations-retention.md](21-monitor-audio-associations-retention.md) | Monitor HDR/ICC/mirror, per-app audio, file associations, retention |
 | [22-packaging.md](22-packaging.md) | App icon and PKGBUILD packaging |
 | [23-bluetooth-ci-release.md](23-bluetooth-ci-release.md) | Bluetooth agent, xvfb/shellcheck CI, tagged releases |
+| [24-monitor-scale-kanshi.md](24-monitor-scale-kanshi.md) | Kanshi-aware monitor scale and valid scale choices |
 
 ## Invariant
 
